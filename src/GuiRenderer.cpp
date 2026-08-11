@@ -21,7 +21,7 @@ GuiRenderer::Font& GuiRenderer::font(const std::string& name) {
     return fonts_.emplace(name,std::move(value)).first->second;
 }
 void GuiRenderer::cacheControl(const GffStruct& control) {
-    for(const auto* label:{"BORDER","HILIGHT","SCROLLBAR","PROTOITEM","DIR","THUMB"})if(const auto* sub=field<GffStruct>(control,label))cacheControl(*sub);
+    for(const auto* label:{"BORDER","HILIGHT","SELECTED","HILIGHTSELECTED","SCROLLBAR","PROTOITEM","DIR","THUMB"})if(const auto* sub=field<GffStruct>(control,label))cacheControl(*sub);
     for(const auto* label:{"CORNER","EDGE","FILL","IMAGE","BACKGROUND"}) {const auto name=string(control,label);if(!name.empty())texture(name);}
     if(const auto* t=field<GffStruct>(control,"TEXT")) {const auto name=string(*t,"FONT");font(name.empty()?"dialogfont16x16":name);}
 }

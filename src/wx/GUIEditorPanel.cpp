@@ -80,15 +80,21 @@ private:
         gesture_=r;Refresh();
     }
     void drawControl(wxGraphicsContext& dc,const GffStruct& control,Rect r) {
-        const auto type=integer(control,"CONTROLTYPE");
-        const char* border=state_==2&&type==7?"SELECTED":state_==1&&(type==5||type==6||type==7)?"HILIGHT":"BORDER";
-        auto inner=renderer_.border(dc,control,border,r);
+        const auto type=std::stoul(string(control,"CONTROLTYPE"));
+        const bool highlight=state_==1||state_==3,toggled=type==7&&(state_>=2||byte(control,"ISSELECTED"));
+        const char* border=toggled?(highlight?"HILIGHTSELECTED":"SELECTED"):highlight&&(type==5||type==6||type==7)?"HILIGHT":"BORDER";
+        const auto* bar=type==11?field<GffStruct>(control,"SCROLLBAR"):nullptr;
+        auto content=r;
+        if(bar) {const auto width=extent(*bar).m_width;content.m_width-=width;if(byte(control,"LEFTSCROLLBAR",1))content.m_x+=width;}
+        auto inner=renderer_.border(dc,control,border,content);
+        if(type==5||type==6) {inner=renderer_.borderInner(control,"BORDER",content);inner.Intersect(renderer_.borderInner(control,"HILIGHT",content));}
+        else if(type==7)inner=content;
         if(const auto* text=field<GffStruct>(control,"TEXT")) {
             auto value=string(*text,"TEXT");
             if(const auto* ref=field<GffUInt32Field>(*text,"STRREF");ref&&ref->value!=0xffffffffu)value=tlk_().resolve(ref->value).value();
-            renderer_.text(dc,*text,value,inner,k2_?1:1.3);
+            renderer_.text(dc,*text,value,inner,k2_?1:extent(*root_).m_height*1.3/768);
         }
-        if(type==11)if(const auto* bar=field<GffStruct>(control,"SCROLLBAR")) {
+        if(bar) {
             const auto width=extent(*bar).m_width;
             renderer_.scrollbar(dc,*bar,{byte(control,"LEFTSCROLLBAR",1)?r.m_x:r.GetRight()-width,r.m_y,width,r.m_height},1,0,1);
         }
@@ -142,7 +148,7 @@ public:
         preview_=new wxCheckBox(this,wxID_ANY,"Game assets");toolbar->Add(preview_,0,wxALIGN_CENTER_VERTICAL|wxALL,4);
         auto* zoom=new wxChoice(this,wxID_ANY);for(const auto* item:{"Fit","50%","100%","200%"})zoom->Append(item);zoom->SetSelection(0);toolbar->Add(zoom,0,wxALL,4);
         auto* grid=new wxChoice(this,wxID_ANY);for(const auto* item:{"1 px grid","4 px grid","8 px grid","16 px grid"})grid->Append(item);grid->SetSelection(0);toolbar->Add(grid,0,wxALL,4);
-        auto* state=new wxChoice(this,wxID_ANY);for(const auto* item:{"Normal","Highlight","Selected"})state->Append(item);state->SetSelection(0);toolbar->Add(state,0,wxALL,4);
+        auto* state=new wxChoice(this,wxID_ANY);for(const auto* item:{"Normal","Highlight","Selected","Selected + highlight"})state->Append(item);state->SetSelection(0);toolbar->Add(state,0,wxALL,4);
         box->Add(toolbar,0,wxEXPAND);
         auto* split=new wxSplitterWindow(this,wxID_ANY);tree_=new wxTreeCtrl(split,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxTR_HAS_BUTTONS|wxTR_SINGLE);
         auto* right=new wxSplitterWindow(split,wxID_ANY);canvas_=new Canvas(right,renderer_,[this]()->const auto&{return model_->tlk();},[this](int index){tree_->SelectItem(items_.at(std::size_t(index+1)));},[this](Rect r){editExtent(r);});
