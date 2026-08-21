@@ -72,7 +72,10 @@ Rect GuiRenderer::border(wxGraphicsContext& dc,const GffStruct& record,const std
         if(styleId==2||(styleId==3&&k2_))stamp(dc,fill,styleId==3?rect:inner,tint);
         else if(styleId==0||styleId==1) {
             const auto& p=texture(fill).layers.front();dc.PushState();dc.Clip(inner.m_x,inner.m_y,inner.m_width,inner.m_height);
-            if(styleId==1)stamp(dc,fill,{inner.m_x+(inner.m_width-p.width)/2,inner.m_y+(inner.m_height-p.height)/2,double(p.width),double(p.height)},tint);
+            if(styleId==1) {
+                const auto width=std::min(inner.m_width,double(p.width)),height=std::min(inner.m_height,double(p.height));
+                stamp(dc,fill,{inner.m_x+(inner.m_width-width)/2,inner.m_y+(inner.m_height-height)/2,width,height},tint);
+            }
             else for(double yy=inner.m_y;yy<inner.GetBottom();yy+=p.height)for(double xx=inner.m_x;xx<inner.GetRight();xx+=p.width)stamp(dc,fill,{xx,yy,double(p.width),double(p.height)},tint);
             dc.PopState();
         }
