@@ -89,6 +89,18 @@ private:
         auto inner=renderer_.border(dc,control,border,content);
         if(type==5||type==6) {inner=renderer_.borderInner(control,"BORDER",content);inner.Intersect(renderer_.borderInner(control,"HILIGHT",content));}
         else if(type==7)inner=content;
+        if(type==10) {
+            auto progress=inner;const auto maximum=std::max(0,integer(control,"MAXVALUE"));
+            const auto value=std::clamp(integer(control,"CURVALUE"),0,maximum);
+            if(maximum>0) {
+                const bool vertical=r.m_height>r.m_width;
+                const auto length=vertical?progress.m_height:progress.m_width;
+                const auto filled=int(float(value)/float(maximum)*float(length));
+                if(!byte(control,"STARTFROMLEFT",1)) {if(vertical)progress.m_y+=length-filled;else progress.m_x+=length-filled;}
+                if(vertical)progress.m_height=filled;else progress.m_width=filled;
+            }
+            renderer_.border(dc,control,"PROGRESS",progress);
+        }
         if(const auto* text=field<GffStruct>(control,"TEXT")) {
             auto value=string(*text,"TEXT");
             if(const auto* ref=field<GffUInt32Field>(*text,"STRREF");ref&&ref->value!=0xffffffffu)value=tlk_().resolve(ref->value).value();
