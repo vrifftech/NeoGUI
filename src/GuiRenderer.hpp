@@ -20,7 +20,7 @@ public:
     void stamp(wxGraphicsContext&,const std::string&,const Rect&,const Color&,double alpha=1,int turn=0,bool flipX=false,bool flipY=false);
     Rect borderInner(const GffStruct&,const std::string&,Rect);
     Rect border(wxGraphicsContext&,const GffStruct&,const std::string&,Rect,std::optional<Color> tint={});
-    void scrollbar(wxGraphicsContext&,const GffStruct&,Rect,int count,int top,int visible);
+    void scrollbar(wxGraphicsContext&,const GffStruct&,Rect,int maximum,int current,int visible);
     void text(wxGraphicsContext&,const GffStruct&,const std::string&,Rect,double scale,std::optional<Color> tint={});
 private:
     struct Font {double height{},width{},spacing{},lineSpacing{};std::vector<wxPoint2DDouble> upper,lower;};

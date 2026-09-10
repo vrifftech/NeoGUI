@@ -81,6 +81,9 @@ private:
     }
     void drawControl(wxGraphicsContext& dc,const GffStruct& control,Rect r) {
         const auto type=std::stoul(string(control,"CONTROLTYPE"));
+        if(type==9) {
+            renderer_.scrollbar(dc,control,r,integer(control,"MAXVALUE"),integer(control,"CURVALUE"),integer(control,"VISIBLEVALUE"));return;
+        }
         const bool highlight=state_==1||state_==3,toggled=type==7&&(state_>=2||byte(control,"ISSELECTED"));
         const char* border=toggled?(highlight?"HILIGHTSELECTED":"SELECTED"):highlight&&(type==5||type==6||type==7)?"HILIGHT":"BORDER";
         const auto* bar=type==11?field<GffStruct>(control,"SCROLLBAR"):nullptr;
@@ -108,7 +111,7 @@ private:
         }
         if(bar) {
             const auto width=extent(*bar).m_width;
-            renderer_.scrollbar(dc,*bar,{byte(control,"LEFTSCROLLBAR",1)?r.m_x:r.GetRight()-width,r.m_y,width,r.m_height},1,0,1);
+            renderer_.scrollbar(dc,*bar,{byte(control,"LEFTSCROLLBAR",1)?r.m_x:r.GetRight()-width,r.m_y,width,r.m_height},1,1,1);
         }
     }
     void paint(wxPaintEvent&) {
