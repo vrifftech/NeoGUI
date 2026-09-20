@@ -82,23 +82,43 @@ Rect GuiRenderer::border(wxGraphicsContext& dc,const GffStruct& record,const std
     }
     return borderInner(record,label,rect);
 }
+void GuiRenderer::image(wxGraphicsContext& dc,const GffStruct& params,Rect area,int flip) {
+    const auto turn=field<GffFloatField>(params,"ROTATE")?int(number(params,"ROTATE")/90):integer(params,"ROTATESTYLE");
+    const auto name=string(params,"IMAGE");
+    if(!name.empty()&&integer(params,"DRAWSTYLE")) {
+        const auto& pixels=texture(name).layers.front();const double width=std::min(area.m_width,double(pixels.width)),height=std::min(area.m_height,double(pixels.height));const auto alignment=integer(params,"ALIGNMENT",18);
+        if((alignment&7)==2)area.m_x+=int((area.m_width-width)/2);else if((alignment&7)==4)area.m_x+=area.m_width-width;
+        if((alignment&56)==16)area.m_y+=int((area.m_height-height)/2);else if((alignment&56)==32)area.m_y+=area.m_height-height;
+        area.m_width=width;area.m_height=height;
+    }
+    stamp(dc,name,area,{1,1,1},1,(turn%4+4)%4,(flip&8)!=0,(flip&4)!=0);
+}
+void GuiRenderer::slider(wxGraphicsContext& dc,const GffStruct& style,Rect rect,bool highlight) {
+    border(dc,style,highlight?"HILIGHT":"BORDER",rect);
+    if(const auto* params=field<GffStruct>(style,"THUMB")) {
+        const auto name=string(*params,"IMAGE");
+        if(!name.empty()) {
+            const auto& pixels=texture(name).layers.front();Rect thumb(0,0,pixels.width,pixels.height);
+            const auto maximum=std::max(0,integer(style,"MAXVALUE")),current=std::clamp(integer(style,"CURVALUE"),0,maximum);
+            const bool vertical=rect.m_height>rect.m_width;
+            if(vertical) {
+                thumb.m_width=rect.m_width;thumb.m_x=rect.m_x;
+                if(maximum>0) {if(rect.m_height>thumb.m_height)thumb.m_y=rect.m_y+current*int(rect.m_height-thumb.m_height)/maximum;else thumb.m_height=rect.m_height;}
+                else {thumb.m_height=std::min(thumb.m_height,rect.m_height);thumb.m_y=rect.m_y;}
+            } else {
+                thumb.m_height=rect.m_height;thumb.m_y=rect.m_y;
+                if(maximum>0) {if(rect.m_width>thumb.m_width)thumb.m_x=rect.m_x+current*int(rect.m_width-thumb.m_width)/maximum;else thumb.m_width=rect.m_width;}
+                else {thumb.m_width=std::min(thumb.m_width,rect.m_width);thumb.m_x=rect.m_x;}
+            }
+            image(dc,*params,thumb,integer(*params,"FLIPSTYLE"));
+        }
+    }
+}
 void GuiRenderer::scrollbar(wxGraphicsContext& dc,const GffStruct& style,Rect rect,int maximum,int current,int visible) {
     maximum=std::max(0,maximum);current=std::clamp(current,0,maximum);if(visible<0)visible=1;
     const bool vertical=rect.m_height>rect.m_width,drawMode=byte(style,"DRAWMODE")!=0;
     const double arrow=std::min(vertical?rect.m_width:rect.m_height,std::floor((vertical?rect.m_height:rect.m_width)/2));
     const Rect track=vertical?Rect(rect.m_x,rect.m_y+arrow,rect.m_width,rect.m_height-2*arrow):Rect(rect.m_x+arrow,rect.m_y,rect.m_width-2*arrow,rect.m_height);
-    const auto image=[&](const char* label,Rect area,int arrowFlip) {
-        const auto& params=*field<GffStruct>(style,label);const auto turn=field<GffFloatField>(params,"ROTATE")?int(number(params,"ROTATE")/90):integer(params,"ROTATESTYLE");
-        const auto name=string(params,"IMAGE");
-        if(!name.empty()&&integer(params,"DRAWSTYLE")) {
-            const auto& pixels=texture(name).layers.front();const double width=std::min(area.m_width,double(pixels.width)),height=std::min(area.m_height,double(pixels.height));const auto alignment=integer(params,"ALIGNMENT",18);
-            if(alignment&2)area.m_x+=(area.m_width-width)/2;else if(alignment&4)area.m_x+=area.m_width-width;
-            if(alignment&16)area.m_y+=(area.m_height-height)/2;else if(alignment&32)area.m_y+=area.m_height-height;
-            area.m_width=width;area.m_height=height;
-        }
-        const int flip=std::string(label)=="DIR"?arrowFlip:integer(params,"FLIPSTYLE");
-        stamp(dc,name,area,{1,1,1},1,(turn%4+4)%4,(flip&8)!=0,(flip&4)!=0);
-    };
     if(!drawMode) {
         auto thumb=border(dc,style,"BORDER",track);
         if(vertical?maximum>=2:maximum!=0) {
@@ -107,11 +127,11 @@ void GuiRenderer::scrollbar(wxGraphicsContext& dc,const GffStruct& style,Rect re
             const auto offset=(length-size)*current/(vertical?maximum-1:maximum);
             if(vertical) {thumb.m_y+=offset;thumb.m_height=size;}else {thumb.m_x+=offset;thumb.m_width=size;}
         }
-        image("THUMB",thumb,0);
+        const auto& params=*field<GffStruct>(style,"THUMB");image(dc,params,thumb,integer(params,"FLIPSTYLE"));
     }
     const auto limit=drawMode&&visible<=1&&current!=maximum?maximum+1:maximum;
-    if(!drawMode||(visible<maximum&&current>0))image("DIR",vertical?Rect(rect.m_x,rect.m_y,rect.m_width,arrow):Rect(rect.m_x,rect.m_y,arrow,rect.m_height),0);
-    if(!drawMode||(visible<maximum&&current+visible<limit))image("DIR",vertical?Rect(rect.m_x,rect.GetBottom()-arrow,rect.m_width,arrow):Rect(rect.GetRight()-arrow,rect.m_y,arrow,rect.m_height),vertical?4:8);
+    if(!drawMode||(visible<maximum&&current>0))image(dc,*field<GffStruct>(style,"DIR"),vertical?Rect(rect.m_x,rect.m_y,rect.m_width,arrow):Rect(rect.m_x,rect.m_y,arrow,rect.m_height),0);
+    if(!drawMode||(visible<maximum&&current+visible<limit))image(dc,*field<GffStruct>(style,"DIR"),vertical?Rect(rect.m_x,rect.GetBottom()-arrow,rect.m_width,arrow):Rect(rect.GetRight()-arrow,rect.m_y,arrow,rect.m_height),vertical?4:8);
 }
 void GuiRenderer::text(wxGraphicsContext& dc,const GffStruct& style,const std::string& value,Rect rect,double scale,std::optional<Color> overrideTint) {
     if(value.empty())return;
