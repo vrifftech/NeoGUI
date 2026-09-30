@@ -56,7 +56,6 @@ public:
     void setDocument(const GffStruct* root,int selected) {if(HasCapture())ReleaseMouse();root_=root;selected_=selected;gesture_.reset();Refresh();}
     void select(int selected) {selected_=selected;Refresh();}
     void setAssets(bool value) {assets_=value;Refresh();}
-    void setK2(bool value) {k2_=value;Refresh();}
     void setZoom(double value) {zoom_=value;Refresh();}
     void setGrid(int value) {grid_=value;}
     void setState(int value) {state_=value;Refresh();}
@@ -89,7 +88,7 @@ private:
         const char* border=toggled?(highlight?"HILIGHTSELECTED":"SELECTED"):highlight&&(type==5||type==6||type==7)?"HILIGHT":"BORDER";
         const auto* bar=type==11?field<GffStruct>(control,"SCROLLBAR"):nullptr;
         auto content=r;
-        if(bar) {const auto width=extent(*bar).m_width;content.m_width-=width;if(byte(control,"LEFTSCROLLBAR",1))content.m_x+=width;}
+        if(bar) {const auto width=renderer_.layoutExtent(extent(*bar)).m_width;content.m_width-=width;if(byte(control,"LEFTSCROLLBAR",1))content.m_x+=width;}
         auto inner=renderer_.border(dc,control,border,content);
         if(type==5||type==6) {inner=renderer_.borderInner(control,"BORDER",content);inner.Intersect(renderer_.borderInner(control,"HILIGHT",content));}
         else if(type==7)inner=content;
@@ -108,10 +107,10 @@ private:
         if(const auto* text=field<GffStruct>(control,"TEXT")) {
             auto value=string(*text,"TEXT");
             if(const auto* ref=field<GffUInt32Field>(*text,"STRREF");ref&&ref->value!=0xffffffffu)value=tlk_().resolve(ref->value).value();
-            renderer_.text(dc,*text,value,inner,k2_?1:extent(*root_).m_height*1.3/768);
+            renderer_.text(dc,*text,value,inner,renderer_.fontScale());
         }
         if(bar) {
-            const auto width=extent(*bar).m_width;
+            const auto width=renderer_.layoutExtent(extent(*bar)).m_width;
             renderer_.scrollbar(dc,*bar,{byte(control,"LEFTSCROLLBAR",1)?r.m_x:r.GetRight()-width,r.m_y,width,r.m_height},1,1,1);
         }
     }
@@ -125,11 +124,13 @@ private:
             std::unique_ptr<wxGraphicsContext> dc(wxGraphicsContext::Create(paint));dc->Translate(offsetX_,offsetY_);dc->Scale(scale_,scale_);
             dc->SetPen(wxPen(wxColour(100,100,100),1/scale_));dc->SetBrush(wxBrush(wxColour(12,14,18)));dc->DrawRectangle(0,0,root.m_width,root.m_height);
             if(assets_) {
+                dc->PushState();dc->Scale(1/renderer_.layoutScale(),1/renderer_.layoutScale());
+                const auto nativeRoot=renderer_.layoutExtent({0,0,root.m_width,root.m_height});
                 dc->BeginLayer(std::clamp(number(*root_,"ALPHA",1),0.0,1.0));
-                if(field<GffStruct>(*root_,"BORDER"))renderer_.border(*dc,*root_,"BORDER",{0,0,root.m_width,root.m_height});
-                else renderer_.stamp(*dc,string(*root_,"BACKGROUND"),{0,0,root.m_width,root.m_height},{1,1,1});
-                for(std::size_t i=0;i<controls(*root_).count();++i)drawControl(*dc,*controls(*root_).GetStruct(i),rect(int(i)));
-                dc->EndLayer();
+                if(field<GffStruct>(*root_,"BORDER"))renderer_.border(*dc,*root_,"BORDER",nativeRoot);
+                else renderer_.stamp(*dc,string(*root_,"BACKGROUND"),nativeRoot,{1,1,1});
+                for(std::size_t i=0;i<controls(*root_).count();++i)drawControl(*dc,*controls(*root_).GetStruct(i),renderer_.layoutExtent(rect(int(i))));
+                dc->EndLayer();dc->PopState();
             }
             dc->SetBrush(*wxTRANSPARENT_BRUSH);
             for(std::size_t i=0;i<controls(*root_).count();++i) {
@@ -145,7 +146,7 @@ private:
     std::function<void(Rect)> edit_;
     const GffStruct* root_{};
     int selected_{-1},grid_{1},state_{};
-    bool assets_{},k2_{},resizing_{};
+    bool assets_{},resizing_{};
     double scale_{1},zoom_{},offsetX_{},offsetY_{};
     wxPoint2DDouble start_;
     Rect original_;
@@ -161,6 +162,7 @@ public:
         const auto button=[&](int id,const char* title){auto* control=new wxButton(this,id,title);toolbar->Add(control,0,wxALL,4);};
         button(ID_Open,"Open...");button(ID_Save,"Save");button(ID_SaveAs,"Save As...");button(ID_Undo,"Undo");button(ID_Redo,"Redo");
         game_=new wxChoice(this,wxID_ANY);game_->Append("K1");game_->Append("K2");game_->SetSelection(0);toolbar->Add(game_,0,wxALL,4);
+        layoutSource_=new wxChoice(this,wxID_ANY);layoutSource_->Append("Archive layout");layoutSource_->Append("Loose / Override layout");layoutSource_->SetSelection(0);toolbar->Add(layoutSource_,0,wxALL,4);
         preview_=new wxCheckBox(this,wxID_ANY,"Game assets");toolbar->Add(preview_,0,wxALIGN_CENTER_VERTICAL|wxALL,4);
         auto* zoom=new wxChoice(this,wxID_ANY);for(const auto* item:{"Fit","50%","100%","200%"})zoom->Append(item);zoom->SetSelection(0);toolbar->Add(zoom,0,wxALL,4);
         auto* grid=new wxChoice(this,wxID_ANY);for(const auto* item:{"1 px grid","4 px grid","8 px grid","16 px grid"})grid->Append(item);grid->SetSelection(0);toolbar->Add(grid,0,wxALL,4);
@@ -175,7 +177,7 @@ public:
         all_=new wxCheckBox(inspector,wxID_ANY,"Show all layout fields");props->Add(all_,0,wxALL,6);all_->Bind(wxEVT_CHECKBOX,[this](wxCommandEvent&){showProperties();});
         properties_=new wxListCtrl(inspector,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxLC_REPORT|wxLC_SINGLE_SEL);
         properties_->InsertColumn(0,"Field",wxLIST_FORMAT_LEFT,FromDIP(200));properties_->InsertColumn(1,"Type",wxLIST_FORMAT_LEFT,FromDIP(110));properties_->InsertColumn(2,"Value",wxLIST_FORMAT_LEFT,FromDIP(300));props->Add(properties_,1,wxEXPAND|wxALL,6);
-        auto* note=new wxStaticText(inspector,wxID_ANY,"Double-click a field to edit its native value. Game assets needs matching textures, fonts and a talk table (File menu). Preview uses native layout coordinates; game scripts and runtime screen content are not executed.");note->Wrap(FromDIP(320));props->Add(note,0,wxEXPAND|wxALL,6);inspector->SetSizer(props);
+        auto* note=new wxStaticText(inspector,wxID_ANY,"Double-click a field to edit its native value. Game assets needs matching textures, fonts and a talk table (File menu). K1 preview uses a 1024x768 desktop with the selected layout source. Game scripts are not executed.");note->Wrap(FromDIP(320));props->Add(note,0,wxEXPAND|wxALL,6);inspector->SetSizer(props);
         right->SetMinimumPaneSize(FromDIP(260));right->SetSashGravity(0.7);right->SplitVertically(canvas_,inspector,-FromDIP(360));
         split->SetMinimumPaneSize(FromDIP(150));split->SplitVertically(tree_,right,FromDIP(210));box->Add(split,1,wxEXPAND);SetSizer(box);createModuleStatusBar(1);
         auto* bar=new wxMenuBar;auto* file=new wxMenu;file->Append(ID_Open,"&Open GUI...\tCtrl+O");file->Append(ID_Save,"&Save\tCtrl+S");file->Append(ID_SaveAs,"Save &As...\tCtrl+Shift+S");file->AppendSeparator();file->Append(ID_Assets,"Asset folder...");file->Append(ID_HostAssets,"Use game-browser assets");file->Append(ID_Tlk,"Load talk table...");bar->Append(file,"&File");
@@ -185,7 +187,8 @@ public:
         tree_->Bind(wxEVT_TREE_SEL_CHANGED,[this](wxTreeEvent& event){if(rebuilding_)return;selected_=static_cast<ControlData*>(tree_->GetItemData(event.GetItem()))->index;canvas_->select(selected_);showProperties();});
         properties_->Bind(wxEVT_LIST_ITEM_ACTIVATED,[this](wxListEvent& event){editProperty(std::size_t(event.GetIndex()));});
         preview_->Bind(wxEVT_CHECKBOX,[this](wxCommandEvent&){try {canvas_->setAssets(preview_->GetValue());if(preview_->GetValue())cacheAssets();}catch(const std::exception& error){wxui::showError(this,error);}});
-        game_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){renderer_.setK2(game_->GetSelection()==1);canvas_->setK2(game_->GetSelection()==1);});
+        game_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){renderer_.setK2(game_->GetSelection()==1);canvas_->Refresh();});
+        layoutSource_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){refresh();});
         zoom->Bind(wxEVT_CHOICE,[this,zoom](wxCommandEvent&){canvas_->setZoom(std::array<double,4>{0,.5,1,2}.at(zoom->GetSelection()));});
         grid->Bind(wxEVT_CHOICE,[this,grid](wxCommandEvent&){canvas_->setGrid(std::array<int,4>{1,4,8,16}.at(grid->GetSelection()));});
         state->Bind(wxEVT_CHOICE,[this,state](wxCommandEvent&){canvas_->setState(state->GetSelection());});
@@ -214,12 +217,14 @@ private:
         auto candidate=std::make_unique<GffModel>();neoshared::loadGffResource(source,candidate->gff(),"GUI");
         auto snapshot=candidate->gff().SaveBytes();if(!canClose())return false;
         model_=std::move(candidate);source_=std::move(source);path_=path;history_={snapshot};saved_=std::move(snapshot);historyIndex_=0;selected_=-1;
+        layoutSource_->SetSelection(!path.empty()||source_.identity.find('#')==std::string::npos?1:0);
         textures_.clear();assetInputs_.clear();renderer_.clear();preview_->SetValue(false);canvas_->setAssets(false);
         if(context_.captureResourceResolver) {auto captured=context_.captureResourceResolver();resolver_=[captured=std::move(captured)](const std::string& name,std::uint16_t type){return captured(name,type,{});};}
         else if(context_.resolveResource)resolver_=context_.resolveResource;
         rebuildTree();showProperties();refresh();return true;
     }
     void refresh() {
+        if(model_)renderer_.setLayout(path_.empty()?source_.fileName:neoshared::pathToUtf8(path_.filename()),layoutSource_->GetSelection()==1);
         canvas_->setDocument(model_?model_->gff().root():nullptr,selected_);
         setModuleTitle(wxui::toWx(std::string("NeoGUI — ")+(model_?(path_.empty()?source_.fileName:neoshared::pathToUtf8(path_.filename()))+(dirty()?" *":""):"GUI layout editor")));
         enableModuleCommand(ID_Assets,true);enableModuleCommand(ID_HostAssets,bool(context_.captureResourceResolver));enableModuleCommand(ID_Tlk,bool(model_));enableModuleCommand(ID_Save,bool(model_));enableModuleCommand(ID_SaveAs,bool(model_));enableModuleCommand(ID_Undo,model_&&historyIndex_>0);enableModuleCommand(ID_Redo,model_&&historyIndex_+1<history_.size());
@@ -330,7 +335,7 @@ private:
     Canvas* canvas_{};
     wxTreeCtrl* tree_{};
     wxListCtrl* properties_{};
-    wxChoice* game_{};
+    wxChoice* game_{},*layoutSource_{};
     wxCheckBox* preview_{};wxCheckBox* all_{};
     wxButton* apply_{};
     std::array<wxTextCtrl*,4> geometry_{};

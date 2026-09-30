@@ -14,6 +14,12 @@ public:
         :texture_(std::move(texture)) {}
     void setK2(bool value) {k2_=value;}
     void setLanguage(std::uint32_t value) {language_=value;}
+    void setLayout(std::string name,bool directory);
+    double layoutScale() const {return k2_?1:layoutScale_;}
+    Rect layoutExtent(Rect) const;
+    double fontScale() const {return k2_?1:1.3;}
+    double itemScale() const {return k2_?1:1.6;}
+    int padding(const GffStruct& record) const {return int(integer(record,"PADDING")*layoutScale()+.5);}
     void clear() {fonts_.clear();bitmaps_.clear();}
     void cacheControl(const GffStruct& control);
     void cacheFont(const std::string& name) {font(name);}
@@ -22,7 +28,7 @@ public:
     Rect border(wxGraphicsContext&,const GffStruct&,const std::string&,Rect,std::optional<Color> tint={});
     void slider(wxGraphicsContext&,const GffStruct&,Rect,bool highlight);
     void scrollbar(wxGraphicsContext&,const GffStruct&,Rect,int maximum,int current,int visible);
-    void text(wxGraphicsContext&,const GffStruct&,const std::string&,Rect,double scale,std::optional<Color> tint={});
+    double text(wxGraphicsContext&,const GffStruct&,const std::string&,Rect,double scale,std::optional<Color> tint={},double scroll=0);
 private:
     struct Font {double height{},width{},spacing{},lineSpacing{};std::vector<wxPoint2DDouble> upper,lower;};
     Font& font(const std::string&);
@@ -32,6 +38,7 @@ private:
     std::map<std::string,Font> fonts_;
     std::map<std::string,wxBitmap> bitmaps_;
     bool k2_{};
+    double layoutScale_{1.6};
     std::uint32_t language_{};
 };
 }

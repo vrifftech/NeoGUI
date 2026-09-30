@@ -4,9 +4,27 @@
 #include <wx/image.h>
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <sstream>
 
 namespace neogui {
+void GuiRenderer::setLayout(std::string name,bool directory) {
+    std::transform(name.begin(),name.end(),name.begin(),[](unsigned char c){return char(std::tolower(c));});
+    const auto extension=name.rfind('.');if(extension!=std::string::npos)name.resize(extension);
+    double width=640;
+    for(const auto& size:std::array<std::pair<const char*,double>,6>{{{"16x12",1600},{"12x10",1280},{"12x9",1280},{"10x8",1024},{"10x7",1024},{"8x6",800}}}) {
+        const std::string suffix=size.first;
+        if(name.size()>=suffix.size()&&name.compare(name.size()-suffix.size(),suffix.size(),suffix)==0) {width=size.second;break;}
+    }
+    layoutScale_=directory||name.rfind("pazaak",0)==0?1:1024/width;
+}
+Rect GuiRenderer::layoutExtent(Rect rect) const {
+    const auto scale=layoutScale();
+    if(scale==1)return rect;
+    const auto right=int((rect.m_x+rect.m_width)*scale+.5),bottom=int((rect.m_y+rect.m_height)*scale+.5);
+    rect.m_x=int(rect.m_x*scale+.5);rect.m_y=int(rect.m_y*scale+.5);
+    rect.m_width=right-rect.m_x;rect.m_height=bottom-rect.m_y;return rect;
+}
 GuiRenderer::Font& GuiRenderer::font(const std::string& name) {
     auto found=fonts_.find(name);if(found!=fonts_.end())return found->second;
     const auto& source=texture(name);Font value;std::vector<wxPoint2DDouble>* list=nullptr;std::size_t remaining=0;
@@ -42,6 +60,7 @@ void GuiRenderer::stamp(wxGraphicsContext& dc,const std::string& name,const Rect
 Rect GuiRenderer::borderInner(const GffStruct& record,const std::string& label,Rect rect) {
     const auto* style=field<GffStruct>(record,label);if(!style)return rect;
     const auto corner=string(*style,"CORNER"),edge=string(*style,"EDGE");double dimension=integer(*style,"DIMENSION");
+    if(!k2_&&string(record,"CONTROLTYPE")=="11")dimension=int(dimension*layoutScale()+.5);
     if(dimension==0&&!corner.empty()&&!edge.empty())dimension=texture(corner).layers.front().height;
     Rect inner(rect.m_x+dimension,rect.m_y+dimension,rect.m_width-2*dimension,rect.m_height-2*dimension);
     if(inner.m_width<1||inner.m_width<dimension/2) {inner.m_x=rect.m_x+rect.m_width/2;inner.m_width=0;}
@@ -54,6 +73,7 @@ Rect GuiRenderer::border(wxGraphicsContext& dc,const GffStruct& record,const std
     const auto* style=field<GffStruct>(record,label);if(!style)return rect;
     const auto corner=string(*style,"CORNER"),edge=string(*style,"EDGE"),fill=string(*style,"FILL");const auto tint=overrideTint.value_or(color(*style));
     double dimension=integer(*style,"DIMENSION");
+    if(!k2_&&string(record,"CONTROLTYPE")=="11")dimension=int(dimension*layoutScale()+.5);
     if(dimension==0&&!corner.empty()&&!edge.empty())dimension=texture(corner).layers.front().height;
     double x=0,y=0;if(!corner.empty()) {const auto& p=texture(corner).layers.front();x=dimension?dimension:p.width;y=dimension?dimension:p.height;x=std::min(x,rect.m_width/2);y=std::min(y,rect.m_height/2);}
     const Rect inner(rect.m_x+x,rect.m_y+y,rect.m_width-2*x,rect.m_height-2*y);
@@ -98,7 +118,7 @@ void GuiRenderer::slider(wxGraphicsContext& dc,const GffStruct& style,Rect rect,
     if(const auto* params=field<GffStruct>(style,"THUMB")) {
         const auto name=string(*params,"IMAGE");
         if(!name.empty()) {
-            const auto& pixels=texture(name).layers.front();Rect thumb(0,0,pixels.width,pixels.height);
+            const auto& pixels=texture(name).layers.front();Rect thumb(0,0,int(pixels.width*itemScale()),int(pixels.height*itemScale()));
             const auto maximum=std::max(0,integer(style,"MAXVALUE")),current=std::clamp(integer(style,"CURVALUE"),0,maximum);
             const bool vertical=rect.m_height>rect.m_width;
             if(vertical) {
@@ -133,27 +153,48 @@ void GuiRenderer::scrollbar(wxGraphicsContext& dc,const GffStruct& style,Rect re
     if(!drawMode||(visible<maximum&&current>0))image(dc,*field<GffStruct>(style,"DIR"),vertical?Rect(rect.m_x,rect.m_y,rect.m_width,arrow):Rect(rect.m_x,rect.m_y,arrow,rect.m_height),0);
     if(!drawMode||(visible<maximum&&current+visible<limit))image(dc,*field<GffStruct>(style,"DIR"),vertical?Rect(rect.m_x,rect.GetBottom()-arrow,rect.m_width,arrow):Rect(rect.GetRight()-arrow,rect.m_y,arrow,rect.m_height),vertical?4:8);
 }
-void GuiRenderer::text(wxGraphicsContext& dc,const GffStruct& style,const std::string& value,Rect rect,double scale,std::optional<Color> overrideTint) {
-    if(value.empty())return;
+double GuiRenderer::text(wxGraphicsContext& dc,const GffStruct& style,const std::string& value,Rect rect,double scale,std::optional<Color> overrideTint,double scroll) {
+    if(value.empty())return 0;
+    if(!k2_&&rect.m_width<30)scale=1;
     auto name=string(style,"FONT");if(name.empty())name="dialogfont16x16";auto& f=font(name);const auto& pixels=texture(name).layers.front();
     const auto bytes=neotlk::encodeTextBytes(value,neotlk::detectClassicPreferredEncoding(language_,false,{}));
-    const auto advance=[&](unsigned char c){const auto i=std::min<std::size_t>(c,f.upper.size()-1);return ((f.lower.at(i).m_x-f.upper.at(i).m_x)*f.width+f.spacing)*scale;};
-    std::vector<std::string> lines(1);double width=0;
-    for(unsigned char c:bytes) {
-        if(c=='\n') {lines.emplace_back();width=0;continue;}
-        if(width+advance(c)>rect.m_width&&!lines.back().empty()) {
-            const auto at=lines.back().find_last_of(" -");std::string tail;
-            if(at!=std::string::npos) {const bool space=lines.back()[at]==' ';tail=lines.back().substr(at+1);lines.back().resize(at+(space?0:1));}
-            lines.push_back(std::move(tail));width=0;for(unsigned char previous:lines.back())width+=advance(previous);
-            if(c==' '&&lines.back().empty())continue;
+    const auto glyphWidth=[&](unsigned char c){const auto i=std::min<std::size_t>(c,f.upper.size()-1);return (f.lower.at(i).m_x-f.upper.at(i).m_x)*f.width*scale;};
+    const auto advance=[&](unsigned char c){return glyphWidth(c)+f.spacing*scale;};
+    const auto rounded=[&](double width){return k2_?int(width):int(std::ceil(width));};
+    std::vector<std::pair<std::string,int>> lines;
+    const auto maximum=std::int16_t(rect.m_width);const auto oWidth=rounded(advance('o'));
+    if((bytes.size()==1&&maximum<oWidth)||(bytes.size()<=2&&maximum<2*oWidth))return 0;
+    for(std::size_t begin=0;begin<bytes.size()&&lines.size()<(k2_?100u:1001u);) {
+        if(bytes[begin]=='\n') {lines.emplace_back("",0);++begin;continue;}
+        int width=rounded(glyphWidth(static_cast<unsigned char>(bytes[begin]))),breakWidth=0;
+        auto scan=begin;auto split=std::string::npos;
+        if(width<maximum)for(scan=begin+1;scan<=bytes.size();++scan) {
+            const auto previous=static_cast<unsigned char>(bytes[scan-1]);
+            if((k2_&&previous==' ')||(scan>1&&scan<bytes.size()&&previous=='-'&&std::isalpha(static_cast<unsigned char>(bytes[scan-2]))&&std::isalpha(static_cast<unsigned char>(bytes[scan])))) {split=scan-1;breakWidth=width;}
+            if(scan==bytes.size()||bytes[scan]=='\n')break;
+            width+=k2_?int(advance(static_cast<unsigned char>(bytes[scan]))+.25):int(std::ceil(advance(static_cast<unsigned char>(bytes[scan]))+.25));
+            if(bytes[scan]==' ') {split=scan;breakWidth=width;}
+            if(width>=maximum)break;
         }
-        lines.back().push_back(char(c));width+=advance(c);
+        if(scan==bytes.size()||bytes[scan]=='\n') {lines.emplace_back(bytes.substr(begin,scan-begin),width);begin=scan+(scan<bytes.size());}
+        else if(split!=std::string::npos) {
+            const bool space=bytes[split]==' ';lines.emplace_back(bytes.substr(begin,split-begin+(space?0:1)),breakWidth-(space?rounded(advance(' ')):0));begin=split+1;
+        } else if(scan>begin+1) {
+            const auto last=scan-1;lines.emplace_back(bytes.substr(begin,last-begin)+"-",std::uint16_t(width-rounded(advance(static_cast<unsigned char>(bytes[scan])))-rounded(advance(static_cast<unsigned char>(bytes[last]))))+rounded(advance('-')));begin=last;
+        } else return 0;
     }
     const auto tint=overrideTint.value_or(color(style));const int alignment=integer(style,"ALIGNMENT",9);const double height=f.height*scale;
-    double y=rect.m_y;if(alignment&16)y+=(rect.m_height-height*lines.size())/2;else if(alignment&32)y+=rect.m_height-height*lines.size();
+    const double blockHeight=(f.height+f.lineSpacing)*scale*lines.size();
+    const double ideal=k2_?int(blockHeight+.5)+(int(f.height*scale+.5)<16):std::ceil(blockHeight+.5)+1;
+    double y=rect.m_y;std::size_t first=0;
+    if((alignment&56)==16) {auto offset=(rect.m_height-height*lines.size())/2;while(offset<0&&first<lines.size()) {offset+=height;++first;}y+=offset;}
+    else if((alignment&56)==32) {auto block=height*lines.size();while(block>rect.m_height&&first<lines.size()) {block-=height;++first;}y+=rect.m_height-block;}
+    y-=std::clamp(scroll,0.0,std::max(0.0,ideal-rect.m_height));
     dc.PushState();dc.Clip(rect.m_x,rect.m_y,rect.m_width,rect.m_height);
-    for(const auto& line:lines) {
-        double w=0;for(unsigned char c:line)w+=advance(c);double x=rect.m_x;if(alignment&2)x+=(rect.m_width-w)/2;else if(alignment&4)x+=rect.m_width-w;
+    for(std::size_t row=first;row<lines.size();++row) {
+        const auto& line=lines[row].first;
+        double w=k2_?lines[row].second:0;if(!k2_)for(unsigned char c:line)w+=advance(c);
+        double x=rect.m_x;if((alignment&7)==2)x+=(rect.m_width-w)/2;else if((alignment&7)==4)x+=rect.m_width-w;
         for(unsigned char c:line) {
             const auto i=std::min<std::size_t>(c,f.upper.size()-1);const auto a=f.upper.at(i),b=f.lower.at(i);
             const auto key=name+" glyph "+std::to_string(i)+"/"+std::to_string(tint[0])+"/"+std::to_string(tint[1])+"/"+std::to_string(tint[2]);
@@ -164,8 +205,10 @@ void GuiRenderer::text(wxGraphicsContext& dc,const GffStruct& style,const std::s
             }
             x+=advance(c);
         }
-        y+=height+f.lineSpacing*scale;
+        const auto next=row+1<lines.size()&&!lines[row+1].first.empty()?static_cast<unsigned char>(lines[row+1].first.front()):0;
+        const auto i=std::min<std::size_t>(next,f.upper.size()-1);const auto glyphHeight=(f.upper[i].m_y-f.lower[i].m_y)*f.width*scale;
+        y+=glyphHeight+(k2_?f.width*scale/600:1)*f.lineSpacing*scale;
     }
-    dc.PopState();
+    dc.PopState();return ideal;
 }
 }
