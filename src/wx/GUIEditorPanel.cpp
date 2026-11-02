@@ -275,7 +275,7 @@ private:
         try {auto output=path_;
             if(choose||output.empty()) {wxFileDialog dialog(this,"Save GUI layout",{},wxui::toWx(source_.fileName),"GUI layouts (*.gui)|*.gui;*.GUI",wxFD_SAVE|wxFD_OVERWRITE_PROMPT);if(dialog.ShowModal()!=wxID_OK)return false;output=neosettings::pathFromWx(dialog.GetPath());}
             neoshared::checkGffOutputType(output,".gui");auto inputs=source_.protectedInputs;inputs.insert(inputs.end(),assetInputs_.begin(),assetInputs_.end());if(model_->tlk().loaded())inputs.push_back(model_->tlk().filename());
-            validateHostOutput(output,inputs);model_->gff().SaveFile(output);path_=std::filesystem::absolute(output);saved_=history_.at(historyIndex_);tree_->SetItemText(items_.front(),neosettings::pathToWx(path_.filename()));refresh();return true;
+            neoshared::checkResourceOutput(output,inputs);validateHostOutput(output);model_->gff().SaveFile(output);path_=std::filesystem::absolute(output);saved_=history_.at(historyIndex_);tree_->SetItemText(items_.front(),neosettings::pathToWx(path_.filename()));refresh();return true;
         } catch(const std::exception& error){wxui::showError(this,error);return false;}
     }
     const neoshared::texture::TextureData& texture(const std::string& name) {

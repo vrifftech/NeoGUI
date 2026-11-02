@@ -1,0 +1,136 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  repository_dispatch:
+    types: [neoshared-updated]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+          - runner: windows-2025-vs2026
+            platform: windows-x86_64
+          - runner: macos-15
+            platform: macos-arm64
+            arch: arm64
+          - runner: macos-15-intel
+            platform: macos-x86_64
+            arch: x86_64
+
+    steps:
+      - name: Check out NeoGUI
+        uses: actions/checkout@v7
+        with:
+          path: tool
+          persist-credentials: false
+
+      - name: Check out NeoShared
+        uses: actions/checkout@v7
+        with:
+          repository: vrifftech/neoshared
+          ref: main
+          path: neoshared
+          persist-credentials: false
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential cmake ninja-build pkg-config zlib1g-dev libwxgtk3.2-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: |
+          brew install cmake ninja wxwidgets
+          echo "$(brew --prefix wxwidgets)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        env:
+          VCPKG_BINARY_SOURCES: clear;default,readwrite
+        run: |
+          & ./neoshared/scripts/install-wxwidgets.ps1 `
+            -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT `
+            -Triplet x64-windows-static -CleanAfterBuild
+
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S tool -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEOSHARED_ROOT="${{ github.workspace }}/neoshared" \
+            -DNEOGUI_BUILD_WX_MODULE=OFF -DNEO_MINIMAL_RELEASE=ON
+
+      - name: Configure macOS
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S tool -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DNEOSHARED_ROOT="${{ github.workspace }}/neoshared" \
+            -DNEOGUI_BUILD_WX_MODULE=OFF -DNEO_MINIMAL_RELEASE=ON
+
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        run: |
+          cmake -S tool -B build -G "Visual Studio 18 2026" -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            "-DVCPKG_OVERLAY_PORTS=$env:GITHUB_WORKSPACE/neoshared/vcpkg-ports" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            "-DNEOSHARED_ROOT=$env:GITHUB_WORKSPACE/neoshared" `
+            -DNEOGUI_BUILD_WX_MODULE=OFF -DNEO_MINIMAL_RELEASE=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+
+      - name: Install
+        run: cmake --install build --config Release --prefix "${{ github.workspace }}/stage"
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: tar -czf "$RUNNER_TEMP/NeoGUI-linux-x86_64.tar.gz" -C stage .
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: |
+          bash neoshared/scripts/package-macos-app.sh \
+            --app "${{ github.workspace }}/stage/NeoGUI.app" \
+            --arch "${{ matrix.arch }}" --deployment-target 15.0 \
+            --output "$RUNNER_TEMP/NeoGUI-${{ matrix.platform }}.zip"
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path stage/* `
+            -DestinationPath "$env:RUNNER_TEMP/NeoGUI-windows-x86_64.zip"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: NeoGUI-${{ matrix.platform }}
+          path: ${{ runner.temp }}/NeoGUI-${{ matrix.platform }}.*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
