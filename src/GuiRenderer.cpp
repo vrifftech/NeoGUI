@@ -103,7 +103,9 @@ Rect GuiRenderer::border(wxGraphicsContext& dc,const GffStruct& record,const std
     return borderInner(record,label,rect);
 }
 void GuiRenderer::image(wxGraphicsContext& dc,const GffStruct& params,Rect area,int flip) {
-    const auto turn=field<GffFloatField>(params,"ROTATE")?int(number(params,"ROTATE")/90):integer(params,"ROTATESTYLE");
+    const auto* rotate=field<GffFloatField>(params,"ROTATE");
+    const auto legacy=rotate?0:integer(params,"ROTATESTYLE");
+    const auto turn=rotate?int(rotate->value/90):(legacy>=0&&legacy<4?legacy:0);
     const auto name=string(params,"IMAGE");
     if(!name.empty()&&integer(params,"DRAWSTYLE")) {
         const auto& pixels=texture(name).layers.front();const double width=std::min(area.m_width,double(pixels.width)),height=std::min(area.m_height,double(pixels.height));const auto alignment=integer(params,"ALIGNMENT",18);
@@ -111,7 +113,7 @@ void GuiRenderer::image(wxGraphicsContext& dc,const GffStruct& params,Rect area,
         if((alignment&56)==16)area.m_y+=int((area.m_height-height)/2);else if((alignment&56)==32)area.m_y+=area.m_height-height;
         area.m_width=width;area.m_height=height;
     }
-    stamp(dc,name,area,{1,1,1},1,(turn%4+4)%4,(flip&8)!=0,(flip&4)!=0);
+    stamp(dc,name,area,{1,1,1},1,(-turn%4+4)%4,(flip&12)==8,(flip&12)==4);
 }
 void GuiRenderer::slider(wxGraphicsContext& dc,const GffStruct& style,Rect rect,bool highlight) {
     border(dc,style,highlight?"HILIGHT":"BORDER",rect);
