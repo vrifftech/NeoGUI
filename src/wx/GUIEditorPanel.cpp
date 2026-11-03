@@ -2,6 +2,7 @@
 #include "GuiRenderer.hpp"
 #include "NeoSettings.hpp"
 #include "NeoViewState.hpp"
+#include "NeoGameDirectoryMenu.hpp"
 #include <wx/textctrl.h>
 #include <cctype>
 #include <gff/AppModel.hpp>
@@ -27,7 +28,9 @@
 
 namespace neogui::ui {
 namespace {
-enum {ID_Open=wxID_HIGHEST+31000,ID_Save,ID_SaveAs,ID_Undo,ID_Redo,ID_Assets,ID_HostAssets,ID_Tlk};
+enum {ID_Open=wxID_HIGHEST+25000,ID_Save,ID_SaveAs,ID_Undo,ID_Redo,ID_Assets,ID_HostAssets,ID_Tlk,
+      ID_DarkMode,ID_FontIncrease,ID_FontDecrease,ID_FontReset,ID_Exit,ID_About,ID_ClearRecent,
+      ID_RecentFirst,ID_RecentLast=ID_RecentFirst+neosettings::kMaxRecentFiles-1};
 using Resolver=std::function<std::optional<neoshared::ResourceDocument>(const std::string&,std::uint16_t)>;
 using Key=std::pair<std::string,std::uint16_t>;
 constexpr std::pair<std::uint16_t,const char*> textureTypes[]={{3007,".tpc"},{3006,".txb"},{3,".tga"},{2033,".dds"}};
@@ -115,8 +118,8 @@ private:
         }
     }
     void paint(wxPaintEvent&) {
-        wxAutoBufferedPaintDC paint(this);paint.SetBackground(wxBrush(wxColour(30,32,36)));paint.Clear();
-        if(!root_) {paint.SetTextForeground(*wxLIGHT_GREY);paint.DrawText("Open a .gui layout from the game browser or a working file.",FromDIP(14),FromDIP(14));return;}
+        wxAutoBufferedPaintDC paint(this);paint.SetBackground(wxBrush(GetBackgroundColour()));paint.Clear();
+        if(!root_) {paint.SetTextForeground(GetForegroundColour());paint.DrawText("Open a .gui layout from the game browser or a working file.",FromDIP(14),FromDIP(14));return;}
         try {
             const auto root=extent(*root_);const auto size=GetClientSize();
             scale_=zoom_?zoom_:std::min((size.x-24)/root.m_width,(size.y-24)/root.m_height);
@@ -158,6 +161,7 @@ public:explicit ControlData(int value):index(value) {} int index;
 class Editor final : public GUIEditorPanel {
 public:
     Editor(wxWindow* parent,neomodules::Context context):GUIEditorPanel(parent,std::move(context)),renderer_([this](const auto& name)->const auto&{return textures_.at(neoshared::material::textureResourceKey(name));}) {
+        darkMode_=settings_.darkMode();fontScale_=settings_.fontScale();
         auto* box=new wxBoxSizer(wxVERTICAL);auto* toolbar=new wxWrapSizer(wxHORIZONTAL);
         const auto button=[&](int id,const char* title){auto* control=new wxButton(this,id,title);toolbar->Add(control,0,wxALL,4);};
         button(ID_Open,"Open...");button(ID_Save,"Save");button(ID_SaveAs,"Save As...");button(ID_Undo,"Undo");button(ID_Redo,"Redo");
@@ -180,9 +184,28 @@ public:
         auto* note=new wxStaticText(inspector,wxID_ANY,"Double-click a field to edit its native value. Game assets needs matching textures, fonts and a talk table (File menu). K1 preview uses a 1024x768 desktop with the selected layout source. Game scripts are not executed.");note->Wrap(FromDIP(320));props->Add(note,0,wxEXPAND|wxALL,6);inspector->SetSizer(props);
         right->SetMinimumPaneSize(FromDIP(260));right->SetSashGravity(0.7);right->SplitVertically(canvas_,inspector,-FromDIP(360));
         split->SetMinimumPaneSize(FromDIP(150));split->SplitVertically(tree_,right,FromDIP(210));box->Add(split,1,wxEXPAND);SetSizer(box);createModuleStatusBar(1);
-        auto* bar=new wxMenuBar;auto* file=new wxMenu;file->Append(ID_Open,"&Open GUI...\tCtrl+O");file->Append(ID_Save,"&Save\tCtrl+S");file->Append(ID_SaveAs,"Save &As...\tCtrl+Shift+S");file->AppendSeparator();file->Append(ID_Assets,"Asset folder...");file->Append(ID_HostAssets,"Use game-browser assets");file->Append(ID_Tlk,"Load talk table...");bar->Append(file,"&File");
-        auto* edit=new wxMenu;edit->Append(ID_Undo,"&Undo\tCtrl+Z");edit->Append(ID_Redo,"&Redo\tCtrl+Y");bar->Append(edit,"&Edit");setModuleMenus(bar);
-        Bind(wxEVT_MENU,[this](wxCommandEvent& event){command(event.GetId());});Bind(wxEVT_BUTTON,[this](wxCommandEvent& event){command(event.GetId());},ID_Open,ID_Redo);
+        auto* bar=new wxMenuBar;auto* file=new wxMenu;
+        file->Append(ID_Open,"&Open GUI...\tCtrl+O");
+        recentFilesMenu_=new wxMenu;refreshRecentFiles();file->AppendSubMenu(recentFilesMenu_,"Open &Recent");
+        file->Append(ID_Save,"&Save\tCtrl+S");file->Append(ID_SaveAs,"Save &As...\tCtrl+Shift+S");
+        file->AppendSeparator();file->Append(ID_Assets,"Asset folder...");file->Append(ID_HostAssets,"Use game-browser assets");file->Append(ID_Tlk,"Load talk table...");
+        gameDirectoryMenu_=neogames::appendOpenGameDirectoryMenu(*this,*file,
+            [this](const std::filesystem::path& directory){chooseOpen(directory);},neogames::GameDirectoryGameIds{"kotor","kotor2"});
+        if(!context_.embedded) {file->AppendSeparator();file->Append(ID_Exit,"E&xit");}
+        bar->Append(file,"&File");
+        auto* edit=new wxMenu;edit->Append(ID_Undo,"&Undo\tCtrl+Z");edit->Append(ID_Redo,"&Redo\tCtrl+Y");bar->Append(edit,"&Edit");
+        if(!context_.embedded) {
+            auto* view=new wxMenu;darkModeItem_=view->AppendCheckItem(ID_DarkMode,"&Dark Mode");
+            view->AppendSeparator();view->Append(ID_FontIncrease,"Increase UI Font Size\tCtrl++");
+            view->Append(ID_FontDecrease,"Decrease UI Font Size\tCtrl+-");view->Append(ID_FontReset,"Reset UI Font Size\tCtrl+0");bar->Append(view,"&View");
+            auto* help=new wxMenu;help->Append(ID_About,"&About NeoGUI");bar->Append(help,"&Help");
+            fontScaleWheelFilter_.attach(wxGetTopLevelParent(this),[this](int steps){changeFontScale(steps);});
+        }
+        setModuleMenus(bar);
+        Bind(wxEVT_MENU,[this](wxCommandEvent& event){command(event.GetId());},ID_Open,ID_ClearRecent);
+        Bind(wxEVT_MENU,[this](wxCommandEvent& event){openFile(settings_.recentFiles().at(std::size_t(event.GetId()-ID_RecentFirst)));},ID_RecentFirst,ID_RecentLast);
+        Bind(wxEVT_MENU_OPEN,[this](wxMenuEvent& event){if(event.GetMenu()==recentFilesMenu_)refreshRecentFiles();event.Skip();});
+        Bind(wxEVT_BUTTON,[this](wxCommandEvent& event){command(event.GetId());},ID_Open,ID_Redo);
         Bind(wxEVT_UPDATE_UI,[this](wxUpdateUIEvent& event){const auto id=event.GetId();if(id==ID_Save||id==ID_SaveAs)event.Enable(bool(model_));else if(id==ID_Undo)event.Enable(model_&&historyIndex_>0);else if(id==ID_Redo)event.Enable(model_&&historyIndex_+1<history_.size());},ID_Save,ID_Redo);
         tree_->Bind(wxEVT_TREE_SEL_CHANGED,[this](wxTreeEvent& event){if(rebuilding_)return;selected_=static_cast<ControlData*>(tree_->GetItemData(event.GetItem()))->index;canvas_->select(selected_);showProperties();});
         properties_->Bind(wxEVT_LIST_ITEM_ACTIVATED,[this](wxListEvent& event){editProperty(std::size_t(event.GetIndex()));});
@@ -192,11 +215,14 @@ public:
         zoom->Bind(wxEVT_CHOICE,[this,zoom](wxCommandEvent&){canvas_->setZoom(std::array<double,4>{0,.5,1,2}.at(zoom->GetSelection()));});
         grid->Bind(wxEVT_CHOICE,[this,grid](wxCommandEvent&){canvas_->setGrid(std::array<int,4>{1,4,8,16}.at(grid->GetSelection()));});
         state->Bind(wxEVT_CHOICE,[this,state](wxCommandEvent&){canvas_->setState(state->GetSelection());});
-        setModuleStatusText("Open a .gui layout. Select Game assets to load its textures and fonts.");showProperties();refresh();
+        Bind(wxEVT_DPI_CHANGED,[this](wxDPIChangedEvent& event){CallAfter([this]{applyAppearance();});event.Skip();});
+        setModuleStatusText("Open a .gui layout. Select Game assets to load its textures and fonts.");showProperties();refresh();applyAppearance();
     }
     ~Editor() override {DestroyChildren();}
     bool openFile(const std::filesystem::path& path) override {
-        try {const auto absolute=std::filesystem::absolute(path);neoshared::ResourceDocument source{neoshared::pathToUtf8(absolute),neoshared::pathToUtf8(path.filename()),neoshared::pathToUtf8(path),2047,neoshared::texture::readFileBytes(path),{}};return load(std::move(source),absolute);}
+        try {const auto absolute=std::filesystem::absolute(path);neoshared::ResourceDocument source{neoshared::pathToUtf8(absolute),neoshared::pathToUtf8(path.filename()),neoshared::pathToUtf8(path),2047,neoshared::texture::readFileBytes(path),{}};
+            if(!load(std::move(source),absolute))return false;
+            settings_.addRecentFile(absolute);refreshRecentFiles();return true;}
         catch(const std::exception& error){wxui::showError(this,error);return false;}
     }
     bool openResource(neoshared::ResourceDocument source) override {
@@ -207,11 +233,23 @@ public:
         const int answer=wxMessageBox("Save changes to this GUI layout?","Unsaved GUI layout",wxYES_NO|wxCANCEL|wxICON_QUESTION,this);
         return answer==wxNO||(answer==wxYES&&save(false));
     }
-    void setAppearance(bool dark,double scale) override {wxui::applyTheme(this,dark);neoview::applyFontScale(this,scale);Refresh();}
+    void setAppearance(bool dark,double scale) override {darkMode_=dark;fontScale_=scale;applyAppearance();}
     std::vector<std::filesystem::path> openPaths() const override {
         auto result=source_.protectedInputs;result.insert(result.end(),assetInputs_.begin(),assetInputs_.end());if(!path_.empty())result.push_back(path_);if(model_&&model_->tlk().loaded())result.push_back(model_->tlk().filename());return result;
     }
 private:
+    void applyAppearance() {
+        if(!context_.embedded)darkModeItem_->Check(darkMode_);
+        wxui::applyTheme(this,darkMode_);neoview::applyFontScale(this,fontScale_);canvas_->Refresh();
+    }
+    void changeFontScale(int steps) {
+        fontScale_=neoview::steppedFontScale(fontScale_,steps);settings_.setFontScale(fontScale_);neoview::applyFontScale(this,fontScale_);
+    }
+    void refreshRecentFiles() {neosettings::populateRecentFilesMenu(*recentFilesMenu_,settings_,ID_RecentFirst,ID_ClearRecent);}
+    void chooseOpen(const std::filesystem::path& directory={}) {
+        wxFileDialog dialog(this,"Open GUI layout",neosettings::pathToWx(directory),{},"GUI layouts (*.gui)|*.gui;*.GUI",wxFD_OPEN|wxFD_FILE_MUST_EXIST);
+        if(dialog.ShowModal()==wxID_OK)openFile(neosettings::pathFromWx(dialog.GetPath()));
+    }
     bool dirty() const {return model_&&history_.at(historyIndex_)!=saved_;}
     bool load(neoshared::ResourceDocument source,const std::filesystem::path& path) {
         auto candidate=std::make_unique<GffModel>();neoshared::loadGffResource(source,candidate->gff(),"GUI");
@@ -257,6 +295,7 @@ private:
     void editProperty(std::size_t index) {
         const auto row=rows_.at(index);if(!row.editable)return;
         wxTextEntryDialog dialog(this,wxui::toWx(row.path+" ("+row.type+")"),"Edit GUI field",wxui::toWx(row.value),wxOK|wxCANCEL|wxRESIZE_BORDER|wxTE_MULTILINE);
+        wxui::applyTheme(&dialog,darkMode_);neoview::applyFontScale(&dialog,fontScale_);
         dialog.SetSize(FromDIP(wxSize(550,240)));if(dialog.ShowModal()!=wxID_OK)return;
         try {model_->setValue(row.path,wxui::toStd(dialog.GetValue()));recordEdit();if(preview_->GetValue())cacheAssets();}
         catch(const std::exception& error){wxui::showError(this,error);}
@@ -275,7 +314,7 @@ private:
         try {auto output=path_;
             if(choose||output.empty()) {wxFileDialog dialog(this,"Save GUI layout",{},wxui::toWx(source_.fileName),"GUI layouts (*.gui)|*.gui;*.GUI",wxFD_SAVE|wxFD_OVERWRITE_PROMPT);if(dialog.ShowModal()!=wxID_OK)return false;output=neosettings::pathFromWx(dialog.GetPath());}
             neoshared::checkGffOutputType(output,".gui");auto inputs=source_.protectedInputs;inputs.insert(inputs.end(),assetInputs_.begin(),assetInputs_.end());if(model_->tlk().loaded())inputs.push_back(model_->tlk().filename());
-            neoshared::checkResourceOutput(output,inputs);validateHostOutput(output);model_->gff().SaveFile(output);path_=std::filesystem::absolute(output);saved_=history_.at(historyIndex_);tree_->SetItemText(items_.front(),neosettings::pathToWx(path_.filename()));refresh();return true;
+            neoshared::checkResourceOutput(output,inputs);validateHostOutput(output);model_->gff().SaveFile(output);path_=std::filesystem::absolute(output);saved_=history_.at(historyIndex_);settings_.addRecentFile(path_);refreshRecentFiles();tree_->SetItemText(items_.front(),neosettings::pathToWx(path_.filename()));refresh();return true;
         } catch(const std::exception& error){wxui::showError(this,error);return false;}
     }
     const neoshared::texture::TextureData& texture(const std::string& name) {
@@ -314,15 +353,29 @@ private:
     void resetAssets() {preview_->SetValue(false);canvas_->setAssets(false);textures_.clear();assetInputs_.clear();renderer_.clear();refresh();}
     void command(int id) {
         try {switch(id) {
-            case ID_Open: {wxFileDialog dialog(this,"Open GUI layout",{},{},"GUI layouts (*.gui)|*.gui;*.GUI",wxFD_OPEN|wxFD_FILE_MUST_EXIST);if(dialog.ShowModal()==wxID_OK)openFile(neosettings::pathFromWx(dialog.GetPath()));break;}
+            case ID_Open:chooseOpen();break;
             case ID_Save:save(false);break;case ID_SaveAs:save(true);break;
             case ID_Undo:undo(historyIndex_-1);break;case ID_Redo:undo(historyIndex_+1);break;
             case ID_Assets:assetFolder();break;
             case ID_HostAssets: {auto captured=context_.captureResourceResolver();resolver_=[captured=std::move(captured)](const std::string& name,std::uint16_t type){return captured(name,type,{});};resetAssets();break;}
             case ID_Tlk: {wxFileDialog dialog(this,"Load GUI talk table",{},{},"Talk tables (*.tlk)|*.tlk;*.TLK",wxFD_OPEN|wxFD_FILE_MUST_EXIST);if(dialog.ShowModal()==wxID_OK) {model_->loadTlk(neosettings::pathFromWx(dialog.GetPath()));showProperties();canvas_->Refresh();}break;}
+            case ID_DarkMode:darkMode_=darkModeItem_->IsChecked();settings_.setDarkMode(darkMode_);applyAppearance();break;
+            case ID_FontIncrease:fontScaleWheelFilter_.reset();changeFontScale(1);break;
+            case ID_FontDecrease:fontScaleWheelFilter_.reset();changeFontScale(-1);break;
+            case ID_FontReset:fontScaleWheelFilter_.reset();fontScale_=neoview::kDefaultFontScale;settings_.setFontScale(fontScale_);neoview::applyFontScale(this,fontScale_);break;
+            case ID_ClearRecent:settings_.clearRecentFiles();refreshRecentFiles();break;
+            case ID_Exit:requestModuleClose();break;
+            case ID_About:wxMessageBox("NeoGUI\nEdit GUI layouts and preview game textures, fonts and control states.","About NeoGUI",wxOK|wxICON_INFORMATION,this);break;
         }}catch(const std::exception& error){wxui::showError(this,error);}
     }
     std::unique_ptr<GffModel> model_;
+    neosettings::AppSettings settings_{"NeoGUI"};
+    neoview::FontScaleWheelFilter fontScaleWheelFilter_;
+    std::unique_ptr<neogames::OpenGameDirectoryMenu> gameDirectoryMenu_;
+    wxMenu* recentFilesMenu_{};
+    wxMenuItem* darkModeItem_{};
+    bool darkMode_{};
+    double fontScale_{neoview::kDefaultFontScale};
     neoshared::ResourceDocument source_;
     std::filesystem::path path_;
     Resolver resolver_;

@@ -5,7 +5,7 @@ namespace {
 class Frame final : public wxFrame {
 public:
     Frame():wxFrame(nullptr,wxID_ANY,"NeoGUI") {
-        neomodules::Context context;context.titleChanged=[this](const wxString& title){SetTitle(title);};
+        neomodules::Context context;context.titleChanged=[this](const wxString& title){SetTitle(title);};context.closeRequested=[this]{Close();};
         panel_=neogui::ui::createEditorPanel(this,std::move(context));SetMenuBar(panel_->takeMenus().release());
         auto* box=new wxBoxSizer(wxVERTICAL);box->Add(panel_,1,wxEXPAND);SetSizer(box);
         Bind(wxEVT_MENU,[this](wxCommandEvent& event){if(!neomodules::routeCommand({panel_},event))event.Skip();});
