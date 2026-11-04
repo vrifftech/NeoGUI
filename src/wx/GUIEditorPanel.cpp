@@ -1,5 +1,7 @@
 #include "wx/GUIEditorPanel.hpp"
 #include "GuiRenderer.hpp"
+#include "GameResources.hpp"
+#include <neoshared/bif/ModFolder.hpp>
 #include "NeoSettings.hpp"
 #include "NeoViewState.hpp"
 #include "NeoGameDirectoryMenu.hpp"
@@ -25,13 +27,14 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
 
 namespace neogui::ui {
 namespace {
 enum {ID_Open=wxID_HIGHEST+25000,ID_Save,ID_SaveAs,ID_Undo,ID_Redo,ID_Assets,ID_HostAssets,ID_Tlk,
       ID_DarkMode,ID_FontIncrease,ID_FontDecrease,ID_FontReset,ID_Exit,ID_About,ID_ClearRecent,
       ID_RecentFirst,ID_RecentLast=ID_RecentFirst+neosettings::kMaxRecentFiles-1};
-using Resolver=std::function<std::optional<neoshared::ResourceDocument>(const std::string&,std::uint16_t)>;
+using Resolver=neoshared::ResourceResolver;
 using Key=std::pair<std::string,std::uint16_t>;
 constexpr std::pair<std::uint16_t,const char*> textureTypes[]={{3007,".tpc"},{3006,".txb"},{3,".tga"},{2033,".dds"}};
 
@@ -160,7 +163,7 @@ public:explicit ControlData(int value):index(value) {} int index;
 };
 class Editor final : public GUIEditorPanel {
 public:
-    Editor(wxWindow* parent,neomodules::Context context):GUIEditorPanel(parent,std::move(context)),renderer_([this](const auto& name)->const auto&{return textures_.at(neoshared::material::textureResourceKey(name));}) {
+    Editor(wxWindow* parent,neomodules::Context context):GUIEditorPanel(parent,std::move(context)),renderer_([this](const auto& name)->const auto&{return texture(name);}) {
         darkMode_=settings_.darkMode();fontScale_=settings_.fontScale();
         auto* box=new wxBoxSizer(wxVERTICAL);auto* toolbar=new wxWrapSizer(wxHORIZONTAL);
         const auto button=[&](int id,const char* title){auto* control=new wxButton(this,id,title);toolbar->Add(control,0,wxALL,4);};
@@ -190,7 +193,10 @@ public:
         file->Append(ID_Save,"&Save\tCtrl+S");file->Append(ID_SaveAs,"Save &As...\tCtrl+Shift+S");
         file->AppendSeparator();file->Append(ID_Assets,"Asset folder...");file->Append(ID_HostAssets,"Use game-browser assets");file->Append(ID_Tlk,"Load talk table...");
         gameDirectoryMenu_=neogames::appendOpenGameDirectoryMenu(*this,*file,
-            [this](const std::filesystem::path& directory){chooseOpen(directory);},neogames::GameDirectoryGameIds{"kotor","kotor2"});
+            neogames::OpenGameDirectoryAction{[this](const neogames::SavedGameDirectory& directory) {
+                if(directory.customDirectory)assetFolder(directory.path);
+                else useGame(neogames::resolver().resolve(*neogames::findGame(directory.gameId),directory.path,false).value());
+            }},neogames::GameDirectoryGameIds{"kotor","kotor2"},"Game assets from saved installation");
         if(!context_.embedded) {file->AppendSeparator();file->Append(ID_Exit,"E&xit");}
         bar->Append(file,"&File");
         auto* edit=new wxMenu;edit->Append(ID_Undo,"&Undo\tCtrl+Z");edit->Append(ID_Redo,"&Redo\tCtrl+Y");bar->Append(edit,"&Edit");
@@ -209,7 +215,7 @@ public:
         Bind(wxEVT_UPDATE_UI,[this](wxUpdateUIEvent& event){const auto id=event.GetId();if(id==ID_Save||id==ID_SaveAs)event.Enable(bool(model_));else if(id==ID_Undo)event.Enable(model_&&historyIndex_>0);else if(id==ID_Redo)event.Enable(model_&&historyIndex_+1<history_.size());},ID_Save,ID_Redo);
         tree_->Bind(wxEVT_TREE_SEL_CHANGED,[this](wxTreeEvent& event){if(rebuilding_)return;selected_=static_cast<ControlData*>(tree_->GetItemData(event.GetItem()))->index;canvas_->select(selected_);showProperties();});
         properties_->Bind(wxEVT_LIST_ITEM_ACTIVATED,[this](wxListEvent& event){editProperty(std::size_t(event.GetIndex()));});
-        preview_->Bind(wxEVT_CHECKBOX,[this](wxCommandEvent&){try {canvas_->setAssets(preview_->GetValue());if(preview_->GetValue())cacheAssets();}catch(const std::exception& error){wxui::showError(this,error);}});
+        preview_->Bind(wxEVT_CHECKBOX,[this](wxCommandEvent&){try {if(preview_->GetValue())cacheAssets();canvas_->setAssets(preview_->GetValue());}catch(const std::exception& error){preview_->SetValue(false);canvas_->setAssets(false);wxui::showError(this,error);}});
         game_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){renderer_.setK2(game_->GetSelection()==1);canvas_->Refresh();});
         layoutSource_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){refresh();});
         zoom->Bind(wxEVT_CHOICE,[this,zoom](wxCommandEvent&){canvas_->setZoom(std::array<double,4>{0,.5,1,2}.at(zoom->GetSelection()));});
@@ -232,6 +238,10 @@ public:
         if(!dirty())return true;
         const int answer=wxMessageBox("Save changes to this GUI layout?","Unsaved GUI layout",wxYES_NO|wxCANCEL|wxICON_QUESTION,this);
         return answer==wxNO||(answer==wxYES&&save(false));
+    }
+    void resourceContextChanged() override {
+        if(hostAssets_) {resolver_=context_.captureResourceResolver();resetAssets();}
+        else if(installation_)useGame(*installation_);
     }
     void setAppearance(bool dark,double scale) override {darkMode_=dark;fontScale_=scale;applyAppearance();}
     std::vector<std::filesystem::path> openPaths() const override {
@@ -257,8 +267,11 @@ private:
         model_=std::move(candidate);source_=std::move(source);path_=path;history_={snapshot};saved_=std::move(snapshot);historyIndex_=0;selected_=-1;
         layoutSource_->SetSelection(!path.empty()||source_.identity.find('#')==std::string::npos?1:0);
         textures_.clear();assetInputs_.clear();renderer_.clear();preview_->SetValue(false);canvas_->setAssets(false);
-        if(context_.captureResourceResolver) {auto captured=context_.captureResourceResolver();resolver_=[captured=std::move(captured)](const std::string& name,std::uint16_t type){return captured(name,type,{});};}
-        else if(context_.resolveResource)resolver_=context_.resolveResource;
+        if(context_.captureResourceResolver) {resolver_=context_.captureResourceResolver();installation_.reset();hostAssets_=true;}
+        else if(context_.resolveResource) {resolver_=[resolve=context_.resolveResource](const std::string& name,std::uint16_t type,const neoshared::bif::JobControl&){return resolve(name,type);};installation_.reset();}
+        if(installation_)model_->loadTlk(installation_->tlkPath);
+        if(!context_.embedded&&!resolver_)
+            if(const auto installation=neogames::resolver().resolve(*neogames::findGame(game_->GetSelection()==1?"kotor2":"kotor")))useGame(*installation);
         rebuildTree();showProperties();refresh();return true;
     }
     void refresh() {
@@ -319,33 +332,31 @@ private:
     }
     const neoshared::texture::TextureData& texture(const std::string& name) {
         const auto key=neoshared::material::textureResourceKey(name);if(const auto found=textures_.find(key);found!=textures_.end())return found->second;
-        for(const auto& [type,extension]:textureTypes)if(auto source=resolver_(key,type)) {
-            std::string txi;if(type==3||type==2033)if(auto sidecar=resolver_(key,2022)) {txi.assign(sidecar->bytes.begin(),sidecar->bytes.end());assetInputs_.insert(assetInputs_.end(),sidecar->protectedInputs.begin(),sidecar->protectedInputs.end());}
-            auto image=neoshared::texture::decodeTextureBytes(source->bytes,neoshared::pathFromUtf8(key+extension),std::move(txi));assetInputs_.insert(assetInputs_.end(),source->protectedInputs.begin(),source->protectedInputs.end());return textures_.emplace(key,std::move(image)).first->second;
+        if(auto source=neoshared::resolveTexture(key,[this](const std::string& name,std::uint16_t type){return resolver_(name,type,{});})) {
+            std::string txi;if(source->type==3||source->type==2033)if(auto sidecar=resolver_(key,2022,{})) {txi.assign(sidecar->bytes.begin(),sidecar->bytes.end());assetInputs_.insert(sidecar->protectedInputs.begin(),sidecar->protectedInputs.end());}
+            auto image=neoshared::texture::decodeTextureBytes(source->bytes,neoshared::pathFromUtf8(source->fileName),std::move(txi));assetInputs_.insert(source->protectedInputs.begin(),source->protectedInputs.end());return textures_.emplace(key,std::move(image)).first->second;
         }
         throw std::runtime_error("Missing GUI texture/font: "+name);
     }
-    void loadAssets(const GffStruct& record) {
-        if(const auto* text=field<GffStruct>(record,"TEXT")) {const auto font=string(*text,"FONT");texture(font.empty()?"dialogfont16x16":font);}
-        for(const auto& value:record.allFields()) {
-            if(const auto* child=dynamic_cast<const GffStruct*>(value.get()))loadAssets(*child);
-            else if(const auto* list=dynamic_cast<const GffList*>(value.get()))for(const auto& child:list->allStructs())loadAssets(*child);
-            else {
-                const auto label=value->GetLabel();
-                if(label=="CORNER"||label=="EDGE"||label=="FILL"||label=="IMAGE"||label=="BACKGROUND") {const auto name=value->GetString();if(!name.empty())texture(name);}
-            }
-        }
+    void cacheAssets() {renderer_.setLanguage(model_->tlk().languageId());renderer_.cacheControl(*model_->gff().root());for(const auto& control:controls(*model_->gff().root()).allStructs())renderer_.cacheControl(*control);canvas_->Refresh();}
+    void useGame(const neogames::GameInstall& installation) {
+        wxBusyCursor busy;
+        auto resolve=captureGameResources(installation);
+        if(context_.captureModFolder)resolve=neoshared::bif::ModFolder::layer(context_.captureModFolder(),std::move(resolve));
+        resolver_=std::move(resolve);installation_=installation;hostAssets_=false;
+        game_->SetSelection(installation.id=="kotor2"?1:0);renderer_.setK2(game_->GetSelection()==1);
+        if(model_)model_->loadTlk(installation.tlkPath);
+        resetAssets();
     }
-    void cacheAssets() {renderer_.setLanguage(model_->tlk().languageId());loadAssets(*model_->gff().root());renderer_.cacheControl(*model_->gff().root());for(const auto& control:controls(*model_->gff().root()).allStructs())renderer_.cacheControl(*control);canvas_->Refresh();}
-    void assetFolder() {
-        wxDirDialog dialog(this,"Choose extracted GUI textures and fonts");if(dialog.ShowModal()!=wxID_OK)return;
-        const auto directory=neosettings::pathFromWx(dialog.GetPath());auto files=std::make_shared<std::map<Key,std::filesystem::path>>();
+    void assetFolder(std::filesystem::path directory={}) {
+        if(directory.empty()) {wxDirDialog dialog(this,"Choose extracted GUI textures and fonts");if(dialog.ShowModal()!=wxID_OK)return;directory=neosettings::pathFromWx(dialog.GetPath());}
+        auto files=std::make_shared<std::map<Key,std::filesystem::path>>();
         for(const auto& entry:std::filesystem::directory_iterator(directory)) {
             auto extension=neoshared::pathToUtf8(entry.path().extension());std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return char(std::tolower(c));});
             for(const auto& [type,suffix]:textureTypes)if(extension==suffix)(*files)[{neoshared::material::textureResourceKey(neoshared::pathToUtf8(entry.path().stem())),type}]=entry.path();
             if(extension==".txi")(*files)[{neoshared::material::textureResourceKey(neoshared::pathToUtf8(entry.path().stem())),2022}]=entry.path();
         }
-        resolver_=[files](const std::string& name,std::uint16_t type)->std::optional<neoshared::ResourceDocument> {
+        installation_.reset();hostAssets_=false;resolver_=[files](const std::string& name,std::uint16_t type,const neoshared::bif::JobControl&)->std::optional<neoshared::ResourceDocument> {
             const auto file=files->find({name,type});if(file==files->end())return {};
             const auto& path=file->second;return neoshared::ResourceDocument{neoshared::pathToUtf8(path),neoshared::pathToUtf8(path.filename()),neoshared::pathToUtf8(path),type,neoshared::texture::readFileBytes(path),{path}};
         };resetAssets();
@@ -357,7 +368,7 @@ private:
             case ID_Save:save(false);break;case ID_SaveAs:save(true);break;
             case ID_Undo:undo(historyIndex_-1);break;case ID_Redo:undo(historyIndex_+1);break;
             case ID_Assets:assetFolder();break;
-            case ID_HostAssets: {auto captured=context_.captureResourceResolver();resolver_=[captured=std::move(captured)](const std::string& name,std::uint16_t type){return captured(name,type,{});};resetAssets();break;}
+            case ID_HostAssets: installation_.reset();hostAssets_=true;resolver_=context_.captureResourceResolver();resetAssets();break;
             case ID_Tlk: {wxFileDialog dialog(this,"Load GUI talk table",{},{},"Talk tables (*.tlk)|*.tlk;*.TLK",wxFD_OPEN|wxFD_FILE_MUST_EXIST);if(dialog.ShowModal()==wxID_OK) {model_->loadTlk(neosettings::pathFromWx(dialog.GetPath()));showProperties();canvas_->Refresh();}break;}
             case ID_DarkMode:darkMode_=darkModeItem_->IsChecked();settings_.setDarkMode(darkMode_);applyAppearance();break;
             case ID_FontIncrease:fontScaleWheelFilter_.reset();changeFontScale(1);break;
@@ -379,8 +390,10 @@ private:
     neoshared::ResourceDocument source_;
     std::filesystem::path path_;
     Resolver resolver_;
+    bool hostAssets_{};
+    std::optional<neogames::GameInstall> installation_;
     std::map<std::string,neoshared::texture::TextureData> textures_;
-    std::vector<std::filesystem::path> assetInputs_;
+    std::set<std::filesystem::path> assetInputs_;
     std::vector<std::vector<std::uint8_t>> history_;
     std::vector<std::uint8_t> saved_;
     std::size_t historyIndex_{};
