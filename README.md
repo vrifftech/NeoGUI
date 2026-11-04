@@ -4,6 +4,10 @@ NeoGUI edits the binary `.gui` layouts used by Star Wars: Knights of the Old
 Republic and Knights of the Old Republic II. It provides a standalone desktop
 editor and a reusable wxWidgets panel for NeoToolKit.
 
+Support is offered in the OpenKotOR Discord.
+
+[![OpenKotOR Discord](https://discordapp.com/api/guilds/739590575359262792/widget.png?style=banner2)](https://discord.gg/OpenKotOR)
+
 ## Editing layouts
 
 - Open and save native `.gui` files directly.
