@@ -108,8 +108,8 @@ private:
             renderer_.border(dc,control,"PROGRESS",progress);
         }
         if(const auto* text=field<GffStruct>(control,"TEXT")) {
-            auto value=string(*text,"TEXT");
-            if(const auto* ref=field<GffUInt32Field>(*text,"STRREF");ref&&ref->value!=0xffffffffu)value=tlk_().resolve(ref->value).value();
+            auto value=neogff::decodeGffText(string(*text,"TEXT"),tlk_().languageId());
+            if(const auto* ref=field<GffUInt32Field>(*text,"STRREF");ref&&ref->value!=0xffffffffu)value=tlk_().resolveKotor(ref->value).value();
             renderer_.text(dc,*text,value,inner,renderer_.fontScale());
         }
         if(bar) {
@@ -121,7 +121,7 @@ private:
         wxAutoBufferedPaintDC paint(this);paint.SetBackground(wxBrush(GetBackgroundColour()));paint.Clear();
         if(!root_) {paint.SetTextForeground(GetForegroundColour());paint.DrawText("Open a .gui layout from the game browser or a working file.",FromDIP(14),FromDIP(14));return;}
         try {
-            const auto root=extent(*root_);const auto size=GetClientSize();
+            const auto root=extent(*root_);renderer_.setViewport(renderer_.layoutExtent({0,0,root.m_width,root.m_height}));const auto size=GetClientSize();
             scale_=zoom_?zoom_:std::min((size.x-24)/root.m_width,(size.y-24)/root.m_height);
             offsetX_=(size.x-root.m_width*scale_)/2;offsetY_=(size.y-root.m_height*scale_)/2;
             std::unique_ptr<wxGraphicsContext> dc(wxGraphicsContext::Create(paint));dc->Translate(offsetX_,offsetY_);dc->Scale(scale_,scale_);
@@ -252,7 +252,7 @@ private:
     }
     bool dirty() const {return model_&&history_.at(historyIndex_)!=saved_;}
     bool load(neoshared::ResourceDocument source,const std::filesystem::path& path) {
-        auto candidate=std::make_unique<GffModel>();neoshared::loadGffResource(source,candidate->gff(),"GUI");
+        auto candidate=std::make_unique<GffModel>();neoshared::loadGffResource(source,*candidate,"GUI");
         auto snapshot=candidate->gff().SaveBytes();if(!canClose())return false;
         model_=std::move(candidate);source_=std::move(source);path_=path;history_={snapshot};saved_=std::move(snapshot);historyIndex_=0;selected_=-1;
         layoutSource_->SetSelection(!path.empty()||source_.identity.find('#')==std::string::npos?1:0);

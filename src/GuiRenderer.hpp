@@ -14,6 +14,7 @@ public:
         :texture_(std::move(texture)) {}
     void setK2(bool value) {k2_=value;}
     void setLanguage(std::uint32_t value) {language_=value;}
+    void setViewport(Rect value) {viewport_=value;}
     void setLayout(std::string name,bool directory);
     double layoutScale() const {return k2_?1:layoutScale_;}
     Rect layoutExtent(Rect) const;
@@ -39,6 +40,7 @@ private:
     std::map<std::string,wxBitmap> bitmaps_;
     bool k2_{};
     double layoutScale_{1.6};
+    Rect viewport_{0,0,1024,768};
     std::uint32_t language_{};
 };
 }

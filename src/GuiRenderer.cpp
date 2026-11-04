@@ -105,7 +105,9 @@ Rect GuiRenderer::border(wxGraphicsContext& dc,const GffStruct& record,const std
 void GuiRenderer::image(wxGraphicsContext& dc,const GffStruct& params,Rect area,int flip) {
     const auto* rotate=field<GffFloatField>(params,"ROTATE");
     const auto legacy=rotate?0:integer(params,"ROTATESTYLE");
-    const auto turn=rotate?int(rotate->value/90):(legacy>=0&&legacy<4?legacy:0);
+    const float rotation=rotate?rotate->value:float(legacy>=0&&legacy<4?legacy*90:0);
+    const float angle=rotation<0?rotation+360:rotation;
+    const bool cardinal=angle==0||angle==90||angle==180||angle==270;
     const auto name=string(params,"IMAGE");
     if(!name.empty()&&integer(params,"DRAWSTYLE")) {
         const auto& pixels=texture(name).layers.front();const double width=std::min(area.m_width,double(pixels.width)),height=std::min(area.m_height,double(pixels.height));const auto alignment=integer(params,"ALIGNMENT",18);
@@ -113,7 +115,20 @@ void GuiRenderer::image(wxGraphicsContext& dc,const GffStruct& params,Rect area,
         if((alignment&56)==16)area.m_y+=int((area.m_height-height)/2);else if((alignment&56)==32)area.m_y+=area.m_height-height;
         area.m_width=width;area.m_height=height;
     }
+    dc.PushState();
+    if(!cardinal) {
+        const auto width=viewport_.m_width,height=viewport_.m_height;
+        const auto cx=area.m_x+area.m_width*.5,cy=area.m_y+area.m_width*.5*height/width;
+        dc.Translate(cx,cy);dc.Scale(width,-height);dc.Rotate(angle*0.017453292519943295);
+        if(!k2_) {
+            float phase=float(int(angle)%180)/90;phase+=phase>1?1-phase:0;
+            dc.Scale(1-phase+phase*width/height,1-phase+phase*height/width);
+        }
+        dc.Scale(1/width,-1/height);dc.Translate(-cx,-cy);
+    }
+    const auto turn=cardinal?int(angle/90):0;
     stamp(dc,name,area,{1,1,1},1,(-turn%4+4)%4,(flip&12)==8,(flip&12)==4);
+    dc.PopState();
 }
 void GuiRenderer::slider(wxGraphicsContext& dc,const GffStruct& style,Rect rect,bool highlight) {
     border(dc,style,highlight?"HILIGHT":"BORDER",rect);
