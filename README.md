@@ -1,8 +1,7 @@
 # NeoGUI
 
 NeoGUI edits the binary `.gui` layouts used by Star Wars: Knights of the Old
-Republic and Knights of the Old Republic II. It provides a standalone desktop
-editor and a reusable wxWidgets panel for NeoToolKit.
+Republic and Knights of the Old Republic II.
 
 Support is offered in the OpenKotOR Discord.
 
@@ -99,11 +98,6 @@ cmake -S . -B build -G "Visual Studio 18 2026" -A x64 `
 cmake --build build --config Release --parallel 2
 ./build/Release/NeoGUI.exe
 ```
-
-### Reusable panel
-
-Set `NEOGUI_BUILD_WX_GUI=OFF` and `NEOGUI_BUILD_WX_MODULE=ON` when building only
-the panel. An application that adds NeoGUI with `add_subdirectory` can link
 `neogui::wx` and create the editor through `neogui::ui::createEditorPanel`.
 
 Both build options default to `ON`. The standalone application installs with
