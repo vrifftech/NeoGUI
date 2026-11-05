@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NeoGUI
+Comment=BioWare GUI layout editor
+Exec=NeoGUI %F
+Icon=neogui
+Terminal=false
+Categories=Utility;Development;

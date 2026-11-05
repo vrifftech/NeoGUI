@@ -1,10 +1,13 @@
 #include "wx/GUIEditorPanel.hpp"
 #include "NeoSettings.hpp"
+#include "neogui_icon.xpm"
 #include <wx/app.h>
+#include <wx/icon.h>
 namespace {
 class Frame final : public wxFrame {
 public:
     Frame():wxFrame(nullptr,wxID_ANY,"NeoGUI") {
+        SetIcon(wxIcon(neogui_icon_xpm));
         neomodules::Context context;context.titleChanged=[this](const wxString& title){SetTitle(title);};context.closeRequested=[this]{Close();};
         panel_=neogui::ui::createEditorPanel(this,std::move(context));SetMenuBar(panel_->takeMenus().release());
         auto* box=new wxBoxSizer(wxVERTICAL);box->Add(panel_,1,wxEXPAND);SetSizer(box);
