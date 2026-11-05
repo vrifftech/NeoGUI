@@ -3,8 +3,11 @@
 #include <neoshared/bif/ResourceDocument.hpp>
 #include <neoshared/game/OverrideAliases.hpp>
 #include <neoshared/material/Material.hpp>
+#include <neoshared/texture/FileUtil.hpp>
 #include <twoda/TwoDAFile.hpp>
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -14,11 +17,19 @@
 namespace neogui {
 namespace {
 using Key = std::pair<std::string, std::uint16_t>;
+const std::vector<std::uint16_t> assetTypes{3, 2017, 2022, 2033, 3006, 3007};
+const std::map<std::string, std::uint16_t> assetExtensions{
+    {".tga", 3}, {".2da", 2017}, {".txi", 2022}, {".dds", 2033}, {".txb", 3006}, {".tpc", 3007}};
+std::string lower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return value;
+}
 constexpr auto keyLayer = std::numeric_limits<std::size_t>::max();
 struct Location {
     std::size_t layer;
     neoshared::bif::ResourceSelection resource;
     std::size_t directory{};
+    std::filesystem::path file{};
 };
 struct GameResources {
     neoshared::bif::KeyBifArchive key;
@@ -49,13 +60,18 @@ struct GameResources {
                     std::tuple{found->second.layer, found->second.directory, requested}) return {};
         }
         const auto& location = found->second;
-        auto result = neoshared::bif::readResourceDocument(key,
+        if (location.layer == 0) {
+            job.check();
+            auto result = neoshared::ResourceDocument{
+                neoshared::genericPathToUtf8(location.file), neoshared::pathToUtf8(location.file.filename()),
+                neoshared::genericPathToUtf8(location.file), type,
+                neoshared::texture::readFileBytes(location.file), {location.file}};
+            result.sourcePath = location.file;
+            result.priority = neoshared::ResourcePriority::Directory;
+            return result;
+        }
+        return neoshared::bif::readResourceDocument(key,
             layers[location.layer == keyLayer ? 0 : location.layer], location.resource, job);
-        result.priority = location.layer == keyLayer ? neoshared::ResourcePriority::Key
-            : location.layer == 0 ? neoshared::ResourcePriority::Directory
-            : layers[location.layer].archives()[layers[location.layer].resources()[location.resource.resourceIndex].archiveIndex].kind == neoshared::bif::LooseArchiveKind::Rim
-                ? neoshared::ResourcePriority::Image : neoshared::ResourcePriority::Archive;
-        return result;
     }
 };
 }
@@ -68,7 +84,7 @@ neoshared::ResourceResolver captureGameResources(const neoshared::game::GameInst
     const auto root = game::normalizeConfiguredPath(installation.installPath);
     const auto variant = k1 ? aliases::Game::Kotor : aliases::Game::Kotor2;
     const auto keyPath = game::findExistingPathCaseInsensitive(root / "chitin.key");
-    if (!resources->key.open(keyPath, {}, {}, {}, k1)) throw std::runtime_error(resources->key.lastError());
+    if (!resources->key.open(keyPath, {}, {}, {}, k1, assetTypes)) throw std::runtime_error(resources->key.lastError());
     for (const auto& resource : resources->key.resources())
         resources->add(resource.resref, resource.type, {keyLayer, {neoshared::bif::ResourceSource::KeyBif, resource.index}});
 
@@ -106,10 +122,24 @@ neoshared::ResourceResolver captureGameResources(const neoshared::game::GameInst
     roots.push_back({"tempclient", directory("tempclient"), {}, 0, false, 0});
     for (std::size_t i = 0; i < roots.size(); ++i) roots[i].precedence = i;
     resources->layers.emplace_back();
-    auto& directories = resources->layers.back();
-    if (!directories.openFiles(root, {}) || !directories.addOverrideDirectories(roots, {}, {}, true))
-        throw std::runtime_error(directories.lastError());
-    resources->indexLayer();
+    for (const auto& directory : roots) {
+        std::map<std::string, std::filesystem::path> files;
+        std::error_code error;
+        for (std::filesystem::recursive_directory_iterator entry(directory.path, error), end;
+             entry != end; entry.increment(error)) {
+            if (entry->is_directory()) {
+                if (directory.maximumDepth >= 0 && entry.depth() >= directory.maximumDepth)
+                    entry.disable_recursion_pending();
+            } else if (assetExtensions.count(lower(neoshared::pathToUtf8(entry->path().extension()))) && entry->is_regular_file()) {
+                files.emplace(lower(neoshared::genericPathToUtf8(entry->path())), entry->path());
+            }
+        }
+        if (error && error != std::errc::no_such_file_or_directory && error != std::errc::not_a_directory)
+            throw std::filesystem::filesystem_error("Cannot enumerate GUI assets", directory.path, error);
+        for (const auto& [name, path] : files)
+            resources->add(neoshared::pathToUtf8(path.stem()), assetExtensions.at(lower(neoshared::pathToUtf8(path.extension()))),
+                           {0, {}, directory.precedence, path});
+    }
 
     const auto addArchive = [&](const std::filesystem::path& candidate) {
         const auto path = game::findExistingPathCaseInsensitive(candidate);
