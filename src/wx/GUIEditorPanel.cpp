@@ -294,7 +294,10 @@ public:
         gameDirectoryMenu_=neogames::appendOpenGameDirectoryMenu(*this,*assets,
             neogames::OpenGameDirectoryAction{[this](const neogames::SavedGameDirectory& directory) {
                 if(directory.customDirectory)assetFolder(directory.path);
-                else useGame(neogames::resolver().resolve(*neogames::findGame(directory.gameId),directory.path,false).value());
+                else {
+                    const auto installs=neogames::resolver().settings().readSaved(*neogames::findGame(directory.gameId));
+                    useGame(*std::find_if(installs.begin(),installs.end(),[&](const auto& install){return install.installId==directory.installId;}));
+                }
             }},neogames::GameDirectoryGameIds{"kotor","kotor2"},"Saved game installation");
         assets->Append(ID_Assets,"Extracted textures/fonts folder...");
         if(context_.captureResourceResolver)assets->Append(ID_HostAssets,"Use game-browser assets");
@@ -347,7 +350,7 @@ public:
             for(std::size_t i=0;i<documents_.size();++i)if(!documents_[i].path.empty()&&neosettings::samePathForMru(documents_[i].path,absolute)) {rememberView();showDocument(i);return true;}
             neoshared::ResourceDocument source{neoshared::pathToUtf8(absolute),neoshared::pathToUtf8(path.filename()),neoshared::pathToUtf8(path),2047,neoshared::texture::readFileBytes(path),{}};
             if(!load(std::move(source),absolute))return false;
-            settings_.addRecentFile(absolute);refreshRecentFiles();neogames::resolver().inferFromOpenedPath(absolute);return true;}
+            settings_.addRecentFile(absolute);refreshRecentFiles();return true;}
         catch(const std::exception& error){wxui::showError(this,error);return false;}
     }
     bool openResource(neoshared::ResourceDocument source) override {
@@ -433,8 +436,6 @@ private:
         d.resolver=document().resolver;d.installation=document().installation;d.hostAssets=document().hostAssets;d.assets=document().assets;d.game=game_->GetSelection();d.layout=1;
         if(context_.captureResourceResolver) {d.resolver=context_.captureResourceResolver();d.installation.reset();d.hostAssets=true;d.assets="NeoToolKit game browser";}
         else if(context_.resolveResource) {d.resolver=[resolve=context_.resolveResource](const std::string& name,std::uint16_t type,const neoshared::bif::JobControl&){return resolve(name,type);};d.installation.reset();d.assets="Game browser";}
-        if(!context_.embedded&&!d.resolver)
-            if(const auto installation=neogames::resolver().resolve(*neogames::findGame(d.game==1?"kotor2":"kotor"))) {d.installation=installation;d.resolver=captureGameResources(*installation);d.assets=std::string(d.game==1?"KOTOR 2: ":"KOTOR 1: ")+neoshared::pathToUtf8(installation->installPath);}
         if(d.installation)d.model->loadTlk(d.installation->tlkPath);
         else if(document().model&&document().model->tlk().loaded())d.model->loadTlk(document().model->tlk().filename());
         d.layout=!d.path.empty()||d.source.priority<=neoshared::ResourcePriority::Directory?1:0;
@@ -554,7 +555,7 @@ private:
             for(const auto& other:documents_)if(&other!=&document()) {if(!other.path.empty())inputs.push_back(other.path);inputs.insert(inputs.end(),other.source.protectedInputs.begin(),other.source.protectedInputs.end());inputs.insert(inputs.end(),other.assetInputs.begin(),other.assetInputs.end());if(other.model&&other.model->tlk().loaded())inputs.push_back(other.model->tlk().filename());}
             neoshared::checkResourceOutput(output,inputs);validateHostOutput(output);document().model->gff().SaveFile(output);document().path=neosettings::storedPath(output);
             if(detached)layoutSource_->SetSelection(1);
-            document().saved=document().history.at(document().historyIndex).bytes;settings_.addRecentFile(document().path);refreshRecentFiles();neogames::resolver().inferFromOpenedPath(document().path);tree_->SetItemText(items_.front(),neosettings::pathToWx(document().path.filename()));refresh();return true;
+            document().saved=document().history.at(document().historyIndex).bytes;settings_.addRecentFile(document().path);refreshRecentFiles();tree_->SetItemText(items_.front(),neosettings::pathToWx(document().path.filename()));refresh();return true;
         } catch(const std::exception& error){wxui::showError(this,error);return false;}
     }
     const neoshared::texture::TextureData& texture(const std::string& name) {
