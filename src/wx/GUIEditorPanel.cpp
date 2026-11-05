@@ -6,6 +6,7 @@
 #include "NeoViewState.hpp"
 #include "NeoDocumentTabs.hpp"
 #include "NeoGameDirectoryMenu.hpp"
+#include "NeoPatcherExport.hpp"
 #include <wx/textctrl.h>
 #include <cctype>
 #include <gff/AppModel.hpp>
@@ -40,7 +41,7 @@ namespace {
 enum {ID_Open=wxID_HIGHEST+25000,ID_Save,ID_SaveAs,ID_Undo,ID_Redo,ID_Assets,ID_HostAssets,ID_Tlk,
       ID_DarkMode,ID_FontIncrease,ID_FontDecrease,ID_FontReset,ID_Exit,ID_About,ID_ClearRecent,
       ID_New,ID_Close,ID_CloseOthers,ID_Next,ID_Previous,ID_Find,ID_FindNext,ID_Copy,ID_Paste,
-      ID_Duplicate,ID_Delete,ID_ImportControl,ID_Front,ID_Back,ID_CopyValue,
+      ID_Duplicate,ID_Delete,ID_ImportControl,ID_Front,ID_Back,ID_CopyValue,ID_GeneratePatcher,
       ID_RecentFirst,ID_RecentLast=ID_RecentFirst+neosettings::kMaxRecentFiles-1};
 using Resolver=neoshared::ResourceResolver;
 using Key=std::pair<std::string,std::uint16_t>;
@@ -264,6 +265,7 @@ public:
         edit->Append(ID_Copy,"Copy Control\tCtrl+Shift+C");edit->Append(ID_Paste,"Paste Control\tCtrl+Shift+V");
         edit->Append(ID_Duplicate,"Duplicate Control\tCtrl+D");edit->Append(ID_Delete,"Delete Control\tCtrl+Shift+Delete");
         edit->Append(ID_Front,"Bring Control to Front");edit->Append(ID_Back,"Send Control to Back");edit->Append(ID_CopyValue,"Copy Field Value");bar->Append(edit,"&Edit");
+        auto* tools=new wxMenu;tools->Append(ID_GeneratePatcher,"Generate TSLPatcher/HoloPatcher Instructions...");bar->Append(tools,"&Tools");
         if(!context_.embedded) {
             auto* view=new wxMenu;darkModeItem_=view->AppendCheckItem(ID_DarkMode,"&Dark Mode");
             view->AppendSeparator();view->Append(ID_FontIncrease,"Increase UI Font Size\tCtrl++");
@@ -272,7 +274,7 @@ public:
             fontScaleWheelFilter_.attach(wxGetTopLevelParent(this),[this](int steps){changeFontScale(steps);});
         }
         setModuleMenus(bar);
-        Bind(wxEVT_MENU,[this](wxCommandEvent& event){command(event.GetId());},ID_Open,ID_CopyValue);
+        Bind(wxEVT_MENU,[this](wxCommandEvent& event){command(event.GetId());},ID_Open,ID_GeneratePatcher);
         Bind(wxEVT_MENU,[this](wxCommandEvent& event){openFile(settings_.recentFiles().at(std::size_t(event.GetId()-ID_RecentFirst)));},ID_RecentFirst,ID_RecentLast);
         Bind(wxEVT_MENU_OPEN,[this](wxMenuEvent& event){if(event.GetMenu()==recentFilesMenu_)refreshRecentFiles();event.Skip();});
         Bind(wxEVT_BUTTON,[this](wxCommandEvent& event){command(event.GetId());},ID_Open,ID_Redo);
@@ -415,7 +417,7 @@ private:
     }
     void refreshCommands() {
         const bool loaded=bool(document().model),control=loaded&&document().selected>=0;
-        for(int id:{ID_Save,ID_SaveAs,ID_Tlk,ID_Find,ID_FindNext,ID_Paste,ID_ImportControl})enableModuleCommand(id,loaded);
+        for(int id:{ID_Save,ID_SaveAs,ID_Tlk,ID_Find,ID_FindNext,ID_Paste,ID_ImportControl,ID_GeneratePatcher})enableModuleCommand(id,loaded);
         for(int id:{ID_Copy,ID_Duplicate,ID_Delete,ID_Front,ID_Back})enableModuleCommand(id,control);
         enableModuleCommand(ID_CopyValue,properties_->GetSelectedItemCount()!=0);
         enableModuleCommand(ID_CloseOthers,documents_.size()>1);enableModuleCommand(ID_Next,documents_.size()>1);enableModuleCommand(ID_Previous,documents_.size()>1);
@@ -567,6 +569,30 @@ private:
         const auto index=properties_->GetNextItem(-1,wxLIST_NEXT_ALL,wxLIST_STATE_SELECTED);wxClipboardLocker lock;
         if(!lock||!wxTheClipboard->SetData(new wxTextDataObject(wxui::toWx(rows_.at(std::size_t(index)).value))))throw std::runtime_error("Cannot copy the field value.");
     }
+    void generatePatcher() {
+        if(!commitGeometry())return;
+        const auto baseline=wxui::chooseOpenFile(this,"Choose clean/unmodified GUI baseline","GUI layouts (*.gui)|*.gui;*.GUI");
+        if(!baseline)return;
+        GffModel original;
+        neoshared::ResourceDocument source{neoshared::pathToUtf8(*baseline),neoshared::pathToUtf8(baseline->filename()),neoshared::pathToUtf8(*baseline),2047,neoshared::texture::readFileBytes(*baseline),{}};
+        neoshared::loadGffResource(source,original,"GUI");
+        if(document().model->tlk().loaded())original.loadTlk(document().model->tlk().filename());
+        const auto name=wxui::promptText(this,"Patch Target Filename","GUI filename to patch in the user's install:",document().path.empty()?document().source.fileName:neoshared::pathToUtf8(document().path.filename()));
+        if(!name)return;
+        neoshared::checkGffOutputType(neoshared::pathFromUtf8(*name),".gui");
+        const auto output=wxui::choosePatcherOutput(this);
+        if(!output)return;
+        auto project=neotsl::diffGffFlatTable(original.toTable(),document().model->toTable(),*name,false);
+        neotsl::throwIfUnsupported(project);
+        if(!output->writesToIni()) {wxui::showIniFragmentDialog(this,"GUI Patcher INI Fragment",project,{*name});return;}
+        project.assets.push_back({{},*name,std::move(source.bytes)});
+        neoshared::checkResourceOutput(output->iniPath,openPaths());
+        std::vector<std::filesystem::path> targets={output->iniPath,output->iniPath.parent_path()/"info.rtf"};
+        for(const auto& asset:project.assets)targets.push_back(output->iniPath.parent_path()/asset.targetName);
+        validateHostOutputs(targets);
+        const auto report=neotsl::writePackageToIni(project,output->iniPath,true);
+        wxui::showMessage(this,"GUI Patcher Package Generated",std::string(report.mergedExisting?"Merged GUI instructions into:\n":"Created installer INI:\n")+neoshared::pathToUtf8(report.iniPath)+"\n\nThe clean GUI baseline was staged beside the selected INI.");
+    }
     void useGame(const neogames::GameInstall& installation) {
         wxBusyCursor busy;
         auto resolve=captureGameResources(installation);
@@ -605,6 +631,7 @@ private:
             case ID_ImportControl:if(commitGeometry())importControl();break;
             case ID_Front:if(commitGeometry())reorderControl(true);break;case ID_Back:if(commitGeometry())reorderControl(false);break;
             case ID_CopyValue:copyFieldValue();break;
+            case ID_GeneratePatcher:generatePatcher();break;
             case ID_Undo:if(commitGeometry())undo(document().historyIndex-1);break;case ID_Redo:if(commitGeometry())undo(document().historyIndex+1);break;
             case ID_Assets:assetFolder();break;
             case ID_HostAssets: document().installation.reset();document().hostAssets=true;document().resolver=context_.captureResourceResolver();resetAssets();break;
