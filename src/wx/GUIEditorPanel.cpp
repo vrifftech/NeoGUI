@@ -35,6 +35,7 @@
 #include <cmath>
 #include <map>
 #include <set>
+#include <tuple>
 
 namespace neogui::ui {
 namespace {
@@ -42,6 +43,7 @@ enum {ID_Open=wxID_HIGHEST+25000,ID_Save,ID_SaveAs,ID_Undo,ID_Redo,ID_Assets,ID_
       ID_DarkMode,ID_FontIncrease,ID_FontDecrease,ID_FontReset,ID_Exit,ID_About,ID_ClearRecent,
       ID_New,ID_Close,ID_CloseOthers,ID_Next,ID_Previous,ID_Find,ID_FindNext,ID_Copy,ID_Paste,
       ID_Duplicate,ID_Delete,ID_ImportControl,ID_Front,ID_Back,ID_CopyValue,ID_GeneratePatcher,
+      ID_EditValue,ID_RevertGeometry,
       ID_RecentFirst,ID_RecentLast=ID_RecentFirst+neosettings::kMaxRecentFiles-1};
 using Resolver=neoshared::ResourceResolver;
 using Key=std::pair<std::string,std::uint16_t>;
@@ -50,8 +52,8 @@ constexpr std::pair<std::uint16_t,const char*> textureTypes[]={{3007,".tpc"},{30
 class Canvas final : public wxScrolledWindow {
 public:
     Canvas(wxWindow* parent,GuiRenderer& renderer,const std::function<const neotlk::TlkLookup&()>& tlk,
-           std::function<bool(int)> select,std::function<void(Rect)> edit)
-        :wxScrolledWindow(parent),renderer_(renderer),tlk_(tlk),select_(std::move(select)),edit_(std::move(edit)) {
+           std::function<bool()> commit,std::function<void(int)> select,std::function<void(Rect)> edit)
+        :wxScrolledWindow(parent),renderer_(renderer),tlk_(tlk),commit_(std::move(commit)),select_(std::move(select)),edit_(std::move(edit)) {
         SetBackgroundStyle(wxBG_STYLE_PAINT);SetMinSize(FromDIP(wxSize(300,250)));
         SetScrollRate(16,16);
         SetToolTip("Click to select; drag to move or resize. Arrow keys move by the grid step; Shift moves ten steps. Esc cancels a drag.");
@@ -66,7 +68,7 @@ public:
         Bind(wxEVT_MOUSE_CAPTURE_LOST,[this](wxMouseCaptureLostEvent&){gesture_.reset();Refresh();});
         Bind(wxEVT_CHAR_HOOK,[this](wxKeyEvent& event){
             if(event.GetKeyCode()==WXK_ESCAPE&&gesture_) {gesture_.reset();ReleaseMouse();Refresh();}
-            else if(selected_>=0&&(event.GetKeyCode()==WXK_LEFT||event.GetKeyCode()==WXK_RIGHT||event.GetKeyCode()==WXK_UP||event.GetKeyCode()==WXK_DOWN)) {
+            else if(!gesture_&&selected_>=0&&(event.GetKeyCode()==WXK_LEFT||event.GetKeyCode()==WXK_RIGHT||event.GetKeyCode()==WXK_UP||event.GetKeyCode()==WXK_DOWN)) {
                 auto r=rect(selected_);const int step=grid_*(event.ShiftDown()?10:1);
                 if(event.GetKeyCode()==WXK_LEFT)r.m_x-=step;
                 if(event.GetKeyCode()==WXK_RIGHT)r.m_x+=step;
@@ -82,13 +84,14 @@ public:
     void setZoom(double value) {zoom_=value;updateViewport();}
     void setGrid(int value) {grid_=value;}
     void setState(int value) {state_=value;Refresh();}
+    void setBounds(bool value) {bounds_=value;Refresh();}
 private:
     void updateViewport() {
         const auto size=GetClientSize();
         if(root_) {
             const auto r=extent(*root_);
             scale_=zoom_?zoom_:std::min((size.x-24)/r.m_width,(size.y-24)/r.m_height);
-            const wxSize area(std::max(size.x,int(std::ceil(r.m_width*scale_))+24),std::max(size.y,int(std::ceil(r.m_height*scale_))+24));
+            const wxSize area=zoom_?wxSize(std::max(size.x,int(std::ceil(r.m_width*scale_))+24),std::max(size.y,int(std::ceil(r.m_height*scale_))+24)):size;
             offsetX_=(area.x-r.m_width*scale_)/2;offsetY_=(area.y-r.m_height*scale_)/2;SetVirtualSize(area);
         } else SetVirtualSize(size);
         Refresh();
@@ -96,11 +99,11 @@ private:
     Rect rect(int index) const {return index==selected_&&gesture_?*gesture_:extent(*controls(*root_).GetStruct(std::size_t(index)));}
     wxPoint2DDouble point(wxPoint value) const {const auto p=CalcUnscrolledPosition(value);return {(p.x-offsetX_)/scale_,(p.y-offsetY_)/scale_};}
     void down(wxMouseEvent& event) {
-        if(!root_)return;
+        if(!root_||!commit_())return;
         SetFocus();const auto p=point(event.GetPosition());int hit=-1;
         if(selected_>=0) {const auto r=rect(selected_);resizing_=std::abs(p.m_x-r.GetRight())<=7/scale_&&std::abs(p.m_y-r.GetBottom())<=7/scale_;if(resizing_)hit=selected_;}
         if(hit<0) {resizing_=false;for(std::size_t i=controls(*root_).count();i>0;--i)if(rect(int(i-1)).Contains(p)) {hit=int(i-1);break;}}
-        if(!select_(hit))return;
+        select_(hit);
         selected_=hit;Refresh();
         if(hit>=0) {original_=rect(hit);gesture_=original_;start_=p;CaptureMouse();}
     }
@@ -150,7 +153,11 @@ private:
     }
     void paint(wxPaintEvent&) {
         wxAutoBufferedPaintDC paint(this);DoPrepareDC(paint);paint.SetBackground(wxBrush(GetBackgroundColour()));paint.Clear();
-        if(!root_) {paint.SetTextForeground(GetForegroundColour());paint.DrawText("Open a .gui layout from the game browser or a working file.",FromDIP(14),FromDIP(14));return;}
+        const auto drawError=[&](const wxString& message) {paint.SetTextForeground(wxui::currentDarkMode()?wxColour(255,160,140):wxColour(170,35,25));paint.DrawText(message,CalcUnscrolledPosition(FromDIP(wxPoint(12,12))));};
+        if(!root_) {
+            paint.SetTextForeground(GetForegroundColour());int y=FromDIP(14);
+            for(const auto* line:{"New or Open a GUI layout.","Add Control, or select a control.","Edit geometry and fields on the right.","Choose Assets for preview resources.","Save the GUI or generate an Installer INI."}) {paint.DrawText(line,FromDIP(14),y);y+=paint.GetCharHeight()+FromDIP(6);}return;
+        }
         try {
             const auto root=extent(*root_);renderer_.setViewport(renderer_.layoutExtent({0,0,root.m_width,root.m_height}));
             std::unique_ptr<wxGraphicsContext> dc(wxGraphicsContext::Create(paint));dc->Translate(offsetX_,offsetY_);dc->Scale(scale_,scale_);
@@ -165,20 +172,22 @@ private:
                 dc->EndLayer();dc->PopState();
             }
             dc->SetBrush(*wxTRANSPARENT_BRUSH);
-            for(std::size_t i=0;i<controls(*root_).count();++i) {
+            for(std::size_t i=0;i<controls(*root_).count();++i)if(bounds_||int(i)==selected_) {
                 const auto r=rect(int(i));dc->SetPen(wxPen(int(i)==selected_?wxColour(255,205,70):wxColour(100,150,185),1/scale_));
                 dc->DrawRectangle(r.m_x,r.m_y,r.m_width,r.m_height);
             }
             if(selected_>=0) {const auto r=rect(selected_);dc->SetBrush(wxBrush(wxColour(255,205,70)));dc->DrawRectangle(r.GetRight()-4/scale_,r.GetBottom()-4/scale_,8/scale_,8/scale_);}
-        } catch(const std::exception& error) {paint.SetTextForeground(wxColour(255,160,140));paint.DrawText(wxui::toWx(error.what()),12,12);}
+        } catch(const std::bad_optional_access&) {drawError("Unresolved text reference. Load a matching talk table from Assets.");}
+        catch(const std::exception& error) {drawError(wxui::toWx(error.what()));}
     }
     GuiRenderer& renderer_;
     std::function<const neotlk::TlkLookup&()> tlk_;
-    std::function<bool(int)> select_;
+    std::function<bool()> commit_;
+    std::function<void(int)> select_;
     std::function<void(Rect)> edit_;
     const GffStruct* root_{};
     int selected_{-1},grid_{1},state_{};
-    bool assets_{},resizing_{};
+    bool assets_{},resizing_{},bounds_{true};
     double scale_{1},zoom_{},offsetX_{},offsetY_{};
     wxPoint2DDouble start_;
     Rect original_;
@@ -195,11 +204,12 @@ public:
     }
 private:std::function<bool(const std::filesystem::path&)> open_;
 };
-struct Snapshot {std::vector<std::uint8_t> bytes;int selected{-1};};
+struct Snapshot {std::vector<std::uint8_t> bytes;int selected{-1};std::string fieldPath;};
 struct Document {
     std::unique_ptr<GffModel> model;
     neoshared::ResourceDocument source;
     std::filesystem::path path;
+    std::string assets,fieldPath,findText,findPath;
     Resolver resolver;
     bool hostAssets{};
     std::optional<neogames::GameInstall> installation;
@@ -209,7 +219,7 @@ struct Document {
     std::vector<std::uint8_t> saved;
     std::size_t historyIndex{};
     int selected{-1},game{},layout{},zoom{},grid{},state{};
-    bool preview{};
+    bool preview{},allFields{},bounds{true};
     wxPoint scroll;
     wxWindow* tabPage{};
 };
@@ -221,50 +231,74 @@ public:
         tabs_=new wxAuiNotebook(this,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxAUI_NB_TOP|wxAUI_NB_TAB_MOVE|wxAUI_NB_CLOSE_ON_ACTIVE_TAB|wxAUI_NB_SCROLL_BUTTONS);
         box->Add(tabs_,0,wxEXPAND);document().tabPage=neotabs::addTabPage(tabs_,"GUI layout",false);
         const auto button=[&](int id,const char* title){auto* control=new wxButton(this,id,title);toolbar->Add(control,0,wxALL,4);};
-        button(ID_New,"New");button(ID_Open,"Open...");button(ID_Save,"Save");button(ID_SaveAs,"Save As...");button(ID_Undo,"Undo");button(ID_Redo,"Redo");
-        game_=new wxChoice(this,wxID_ANY);game_->Append("K1");game_->Append("K2");game_->SetSelection(0);toolbar->Add(game_,0,wxALL,4);
-        layoutSource_=new wxChoice(this,wxID_ANY);layoutSource_->Append("Archive layout");layoutSource_->Append("Loose / Override layout");layoutSource_->SetSelection(0);toolbar->Add(layoutSource_,0,wxALL,4);
-        preview_=new wxCheckBox(this,wxID_ANY,"Game assets");toolbar->Add(preview_,0,wxALIGN_CENTER_VERTICAL|wxALL,4);
-        zoom_=new wxChoice(this,wxID_ANY);for(const auto* item:{"Fit","50%","100%","200%"})zoom_->Append(item);zoom_->SetSelection(0);toolbar->Add(zoom_,0,wxALL,4);
-        grid_=new wxChoice(this,wxID_ANY);for(const auto* item:{"1 px grid","4 px grid","8 px grid","16 px grid"})grid_->Append(item);grid_->SetSelection(0);toolbar->Add(grid_,0,wxALL,4);
-        state_=new wxChoice(this,wxID_ANY);for(const auto* item:{"Normal","Highlight","Selected","Selected + highlight"})state_->Append(item);state_->SetSelection(0);toolbar->Add(state_,0,wxALL,4);
-        game_->SetToolTip("Game rendering rules. Choose the matching asset installation in the File menu.");
-        layoutSource_->SetToolTip("Preview the engine's archive or loose-file layout scaling rules.");
+        button(ID_New,"New");button(ID_Open,"Open...");button(ID_Save,"Save...");button(ID_SaveAs,"Save As...");button(ID_GeneratePatcher,"Installer INI...");
+        toolbar->AddSpacer(8);button(ID_Undo,"Undo");button(ID_Redo,"Redo");box->Add(toolbar,0,wxEXPAND);
+        auto* previewBar=new wxWrapSizer(wxHORIZONTAL);
+        preview_=new wxCheckBox(this,wxID_ANY,"Render game assets");previewBar->Add(preview_,0,wxALIGN_CENTER_VERTICAL|wxALL,4);
+        const auto choice=[&](const char* label,std::initializer_list<const char*> values) {
+            auto* group=new wxBoxSizer(wxHORIZONTAL);group->Add(new wxStaticText(this,wxID_ANY,label),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,4);
+            auto* control=new wxChoice(this,wxID_ANY);for(const auto* value:values)control->Append(value);control->SetSelection(0);
+            group->Add(control);previewBar->Add(group,0,wxALL,4);return control;
+        };
+        game_=choice("Preview rules:",{"KOTOR 1","KOTOR 2"});
+        const auto activeGame=neogames::resolver().settings().activeGameId();game_->SetSelection(activeGame&&*activeGame=="kotor2"?1:0);
+        layoutSource_=choice("K1 scaling:",{"Archive","Loose / Override"});
+        zoom_=choice("Zoom:",{"Fit","50%","100%","200%"});grid_=choice("Snap:",{"1 px","4 px","8 px","16 px"});
+        state_=choice("Preview state:",{"Normal","Highlight","Selected","Selected + highlight"});
+        bounds_=new wxCheckBox(this,wxID_ANY,"Control bounds");bounds_->SetValue(true);previewBar->Add(bounds_,0,wxALIGN_CENTER_VERTICAL|wxALL,4);
+        preview_->SetToolTip("Render textures and fonts from the source selected in Assets. Preview settings do not edit the layout.");
+        game_->SetToolTip("Rendering rules only. Choose the texture/font source in Assets.");
+        layoutSource_->SetToolTip("KOTOR 1 archive and loose-file scaling. KOTOR 2 does not use this setting.");
         zoom_->SetToolTip("Fixed zoom supports horizontal and vertical scrolling.");
-        box->Add(toolbar,0,wxEXPAND);
-        auto* split=new wxSplitterWindow(this,wxID_ANY);tree_=new wxTreeCtrl(split,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxTR_HAS_BUTTONS|wxTR_SINGLE);
-        auto* right=new wxSplitterWindow(split,wxID_ANY);canvas_=new Canvas(right,renderer_,[this]()->const auto&{return document().model->tlk();},[this](int index){if(!commitGeometry())return false;tree_->SelectItem(items_.at(std::size_t(index+1)));return true;},[this](Rect r){editExtent(r);});
-        auto* inspector=new wxPanel(right);auto* props=new wxBoxSizer(wxVERTICAL);auto* dimensions=new wxFlexGridSizer(0,4,4,4);
+        grid_->SetToolTip("Move and resize in these pixel increments. Shift + arrow keys moves ten increments.");
+        state_->SetToolTip("Preview highlight and selection states without changing control fields.");
+        bounds_->SetToolTip("Show control outlines. The selected control stays marked.");
+        box->Add(previewBar,0,wxEXPAND);
+        assetInfo_=new wxStaticText(this,wxID_ANY,{},wxDefaultPosition,wxDefaultSize,wxST_ELLIPSIZE_MIDDLE);assetInfo_->SetMinSize(wxSize(0,-1));box->Add(assetInfo_,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,6);
+        auto* split=new wxSplitterWindow(this,wxID_ANY);auto* controlPane=new wxPanel(split);auto* controlBox=new wxBoxSizer(wxVERTICAL);auto* controlActions=new wxWrapSizer(wxHORIZONTAL);
+        for(const auto& [id,label]:std::initializer_list<std::pair<int,const char*>>{{ID_ImportControl,"Add Control..."},{ID_Duplicate,"Duplicate"},{ID_Delete,"Delete"}})controlActions->Add(new wxButton(controlPane,id,label),0,wxALL,4);
+        controlBox->Add(controlActions,0,wxEXPAND);tree_=new wxTreeCtrl(controlPane,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxTR_HAS_BUTTONS|wxTR_SINGLE);controlBox->Add(tree_,1,wxEXPAND);controlPane->SetSizer(controlBox);
+        auto* right=new wxSplitterWindow(split,wxID_ANY);canvas_=new Canvas(right,renderer_,[this]()->const auto&{return document().model->tlk();},[this]{return commitGeometry();},[this](int index){tree_->SelectItem(items_.at(std::size_t(index+1)));},[this](Rect r){editExtent(r);});
+        auto* inspector=new wxScrolledWindow(right);inspector->SetScrollRate(8,8);auto* props=new wxBoxSizer(wxVERTICAL);auto* dimensions=new wxFlexGridSizer(0,4,4,4);
+        selectionInfo_=new wxStaticText(inspector,wxID_ANY,{},wxDefaultPosition,wxDefaultSize,wxST_ELLIPSIZE_MIDDLE);selectionInfo_->SetMinSize(wxSize(0,-1));props->Add(selectionInfo_,0,wxEXPAND|wxALL,6);
         for(std::size_t i=0;i<geometry_.size();++i) {dimensions->Add(new wxStaticText(inspector,wxID_ANY,std::array<const char*,4>{"Left","Top","Width","Height"}[i]),0,wxALIGN_CENTER_VERTICAL);geometry_[i]=new wxTextCtrl(inspector,wxID_ANY,{},wxDefaultPosition,FromDIP(wxSize(90,-1)),wxTE_PROCESS_ENTER);dimensions->Add(geometry_[i],1,wxEXPAND);geometry_[i]->Bind(wxEVT_TEXT_ENTER,[this](wxCommandEvent&){applyExtent();});geometry_[i]->Bind(wxEVT_TEXT,[this](wxCommandEvent&){geometryDirty_=true;refresh();});}
         dimensions->AddGrowableCol(1);dimensions->AddGrowableCol(3);props->Add(dimensions,0,wxEXPAND|wxALL,6);
-        apply_=new wxButton(inspector,wxID_ANY,"Apply geometry");props->Add(apply_,0,wxLEFT|wxRIGHT|wxBOTTOM,6);apply_->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){applyExtent();});
-        all_=new wxCheckBox(inspector,wxID_ANY,"Show all layout fields");props->Add(all_,0,wxALL,6);all_->Bind(wxEVT_CHECKBOX,[this](wxCommandEvent&){if(commitGeometry())showProperties();});
+        auto* geometryActions=new wxWrapSizer(wxHORIZONTAL);
+        apply_=new wxButton(inspector,wxID_ANY,"Apply geometry");geometryActions->Add(apply_,0,wxRIGHT|wxBOTTOM,6);apply_->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){applyExtent();});
+        revert_=new wxButton(inspector,ID_RevertGeometry,"Revert geometry");geometryActions->Add(revert_,0,wxBOTTOM,6);props->Add(geometryActions,0,wxEXPAND|wxLEFT|wxRIGHT,6);
+        all_=new wxCheckBox(inspector,wxID_ANY,"Show all layout fields");props->Add(all_,0,wxALL,6);all_->Bind(wxEVT_CHECKBOX,[this](wxCommandEvent&){if(commitGeometry())showProperties();else all_->SetValue(document().allFields);});
+        all_->SetToolTip("Include fields from every control. Geometry always belongs to the selection named above.");
+        auto* fieldActions=new wxWrapSizer(wxHORIZONTAL);auto* editValue=new wxButton(inspector,ID_EditValue,"Edit value...");auto* copyValue=new wxButton(inspector,ID_CopyValue,"Copy value");fieldActions->Add(editValue,0,wxRIGHT,6);fieldActions->Add(copyValue);props->Add(fieldActions,0,wxLEFT|wxRIGHT|wxBOTTOM,6);
         properties_=new wxListCtrl(inspector,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxLC_REPORT|wxLC_SINGLE_SEL);
-        properties_->InsertColumn(0,"Field",wxLIST_FORMAT_LEFT,FromDIP(200));properties_->InsertColumn(1,"Type",wxLIST_FORMAT_LEFT,FromDIP(110));properties_->InsertColumn(2,"Value",wxLIST_FORMAT_LEFT,FromDIP(300));properties_->InsertColumn(3,"Resolved text",wxLIST_FORMAT_LEFT,FromDIP(300));props->Add(properties_,1,wxEXPAND|wxALL,6);
-        auto* note=new wxStaticText(inspector,wxID_ANY,"Double-click a field to edit. Geometry commits on Apply, selection changes or Save. Add native controls from another layout, or copy and paste between tabs. Choose a saved game installation in File for texture and font previews.");note->Wrap(FromDIP(320));props->Add(note,0,wxEXPAND|wxALL,6);inspector->SetSizer(props);
-        right->SetMinimumPaneSize(FromDIP(260));right->SetSashGravity(0.7);right->SplitVertically(canvas_,inspector,-FromDIP(360));
-        split->SetMinimumPaneSize(FromDIP(150));split->SplitVertically(tree_,right,FromDIP(210));box->Add(split,1,wxEXPAND);SetSizer(box);createModuleStatusBar(1);
+        properties_->InsertColumn(0,"Field",wxLIST_FORMAT_LEFT,FromDIP(170));properties_->InsertColumn(1,"Type",wxLIST_FORMAT_LEFT,FromDIP(90));properties_->InsertColumn(2,"Value",wxLIST_FORMAT_LEFT,FromDIP(220));properties_->InsertColumn(3,"Resolved text",wxLIST_FORMAT_LEFT,FromDIP(260));props->Add(properties_,1,wxEXPAND|wxALL,6);
+        auto* note=new wxStaticText(inspector,wxID_ANY,"Enter/Apply commits geometry; Revert discards pending entries. Preview settings affect rendering only.");note->Wrap(FromDIP(320));props->Add(note,0,wxEXPAND|wxALL,6);inspector->SetSizer(props);
+        right->SetMinimumPaneSize(FromDIP(300));right->SetSashGravity(0.7);right->SplitVertically(canvas_,inspector,-FromDIP(360));
+        split->SetMinimumPaneSize(FromDIP(150));split->SplitVertically(controlPane,right,FromDIP(210));box->Add(split,1,wxEXPAND);SetSizer(box);createModuleStatusBar(1);
         auto* bar=new wxMenuBar;auto* file=new wxMenu;
         file->Append(ID_New,"&New GUI\tCtrl+N");
         file->Append(ID_Open,context_.embedded?"&Open GUI...\tCtrl+Shift+O":"&Open GUI...\tCtrl+O");
         recentFilesMenu_=new wxMenu;refreshRecentFiles();file->AppendSubMenu(recentFilesMenu_,"Open &Recent");
-        file->Append(ID_Save,"&Save\tCtrl+S");file->Append(ID_SaveAs,"Save &As...\tCtrl+Shift+S");
+        saveItem_=file->Append(ID_Save,"&Save...\tCtrl+S");file->Append(ID_SaveAs,"Save &As...\tCtrl+Shift+S");
         file->AppendSeparator();file->Append(ID_Close,"&Close Tab\tCtrl+W");file->Append(ID_CloseOthers,"Close &Other Tabs");
         file->Append(ID_Next,"Next Tab\tCtrl+Tab");file->Append(ID_Previous,"Previous Tab\tCtrl+Shift+Tab");
-        file->AppendSeparator();file->Append(ID_Assets,"Asset folder...");file->Append(ID_HostAssets,"Use game-browser assets");file->Append(ID_Tlk,"Load talk table...");
-        gameDirectoryMenu_=neogames::appendOpenGameDirectoryMenu(*this,*file,
-            neogames::OpenGameDirectoryAction{[this](const neogames::SavedGameDirectory& directory) {
-                if(directory.customDirectory)assetFolder(directory.path);
-                else useGame(neogames::resolver().resolve(*neogames::findGame(directory.gameId),directory.path,false).value());
-            }},neogames::GameDirectoryGameIds{"kotor","kotor2"},"Game assets from saved installation");
         if(!context_.embedded) {file->AppendSeparator();file->Append(ID_Exit,"E&xit");}
         bar->Append(file,"&File");
         auto* edit=new wxMenu;edit->Append(ID_Undo,"&Undo\tCtrl+Z");edit->Append(ID_Redo,"&Redo\tCtrl+Y");
-        edit->AppendSeparator();edit->Append(ID_Find,"&Find control or field...\tCtrl+F");edit->Append(ID_FindNext,"Find &Next\tF3");
+        edit->AppendSeparator();edit->Append(ID_EditValue,"Edit Field Value...\tF2");edit->Append(ID_CopyValue,"Copy Field Value");
+        edit->Append(ID_Find,"&Find control or field...\tCtrl+F");edit->Append(ID_FindNext,"Find &Next\tF3");
         edit->AppendSeparator();edit->Append(ID_ImportControl,"Add Control from Layout...");
         edit->Append(ID_Copy,"Copy Control\tCtrl+Shift+C");edit->Append(ID_Paste,"Paste Control\tCtrl+Shift+V");
         edit->Append(ID_Duplicate,"Duplicate Control\tCtrl+D");edit->Append(ID_Delete,"Delete Control\tCtrl+Shift+Delete");
-        edit->Append(ID_Front,"Bring Control to Front");edit->Append(ID_Back,"Send Control to Back");edit->Append(ID_CopyValue,"Copy Field Value");bar->Append(edit,"&Edit");
+        edit->Append(ID_Front,"Bring Control to Front");edit->Append(ID_Back,"Send Control to Back");bar->Append(edit,"&Edit");
+        auto* assets=new wxMenu;
+        gameDirectoryMenu_=neogames::appendOpenGameDirectoryMenu(*this,*assets,
+            neogames::OpenGameDirectoryAction{[this](const neogames::SavedGameDirectory& directory) {
+                if(directory.customDirectory)assetFolder(directory.path);
+                else useGame(neogames::resolver().resolve(*neogames::findGame(directory.gameId),directory.path,false).value());
+            }},neogames::GameDirectoryGameIds{"kotor","kotor2"},"Saved game installation");
+        assets->Append(ID_Assets,"Extracted textures/fonts folder...");
+        if(context_.captureResourceResolver)assets->Append(ID_HostAssets,"Use game-browser assets");
+        assets->AppendSeparator();assets->Append(ID_Tlk,"Load talk table (.tlk)...");bar->Append(assets,"&Assets");
         auto* tools=new wxMenu;tools->Append(ID_GeneratePatcher,"Generate TSLPatcher/HoloPatcher Instructions...");bar->Append(tools,"&Tools");
         if(!context_.embedded) {
             auto* view=new wxMenu;darkModeItem_=view->AppendCheckItem(ID_DarkMode,"&Dark Mode");
@@ -274,26 +308,36 @@ public:
             fontScaleWheelFilter_.attach(wxGetTopLevelParent(this),[this](int steps){changeFontScale(steps);});
         }
         setModuleMenus(bar);
-        Bind(wxEVT_MENU,[this](wxCommandEvent& event){command(event.GetId());},ID_Open,ID_GeneratePatcher);
+        Bind(wxEVT_MENU,[this](wxCommandEvent& event){command(event.GetId());},ID_Open,ID_RevertGeometry);
         Bind(wxEVT_MENU,[this](wxCommandEvent& event){openFile(settings_.recentFiles().at(std::size_t(event.GetId()-ID_RecentFirst)));},ID_RecentFirst,ID_RecentLast);
-        Bind(wxEVT_MENU_OPEN,[this](wxMenuEvent& event){if(event.GetMenu()==recentFilesMenu_)refreshRecentFiles();event.Skip();});
-        Bind(wxEVT_BUTTON,[this](wxCommandEvent& event){command(event.GetId());},ID_Open,ID_Redo);
-        Bind(wxEVT_BUTTON,[this](wxCommandEvent&){command(ID_New);},ID_New);
+        Bind(wxEVT_MENU_OPEN,[this,edit](wxMenuEvent& event){if(event.GetMenu()==recentFilesMenu_)refreshRecentFiles();if(event.GetMenu()==edit) {wxClipboardLocker clipboard;enableModuleCommand(ID_Paste,bool(document().model)&&wxTheClipboard->IsOpened()&&wxTheClipboard->IsSupported(wxDataFormat("NeoGUI.Control")));}event.Skip();});
+        Bind(wxEVT_BUTTON,[this](wxCommandEvent& event){command(event.GetId());},ID_Open,ID_RevertGeometry);
         tree_->Bind(wxEVT_TREE_SEL_CHANGING,[this](wxTreeEvent& event){if(!rebuilding_&&!commitGeometry())event.Veto();});
-        tree_->Bind(wxEVT_TREE_SEL_CHANGED,[this](wxTreeEvent& event){if(rebuilding_)return;document().selected=static_cast<ControlData*>(tree_->GetItemData(event.GetItem()))->index;canvas_->select(document().selected);showProperties();refreshCommands();});
+        tree_->Bind(wxEVT_TREE_SEL_CHANGED,[this](wxTreeEvent& event){if(rebuilding_)return;const auto selected=static_cast<ControlData*>(tree_->GetItemData(event.GetItem()))->index;if(selected!=document().selected)document().fieldPath.clear();document().selected=selected;auto& snapshot=document().history.at(document().historyIndex);snapshot.selected=selected;snapshot.fieldPath=document().fieldPath;canvas_->select(selected);showProperties();});
         properties_->Bind(wxEVT_LIST_ITEM_ACTIVATED,[this](wxListEvent& event){editProperty(std::size_t(event.GetIndex()));});
-        properties_->Bind(wxEVT_LIST_ITEM_SELECTED,[this](wxListEvent&){refreshCommands();});
+        properties_->Bind(wxEVT_LIST_ITEM_SELECTED,[this](wxListEvent& event){document().fieldPath=rows_.at(std::size_t(event.GetIndex())).path;document().history.at(document().historyIndex).fieldPath=document().fieldPath;refreshCommands();});
+        properties_->Bind(wxEVT_LIST_ITEM_DESELECTED,[this](wxListEvent&){refreshCommands();});
         preview_->Bind(wxEVT_CHECKBOX,[this](wxCommandEvent&){updatePreview();});
-        game_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){renderer_.setK2(game_->GetSelection()==1);canvas_->Refresh();});
+        game_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){renderer_.setK2(game_->GetSelection()==1);refresh();});
         layoutSource_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){refresh();});
         zoom_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){canvas_->setZoom(std::array<double,4>{0,.5,1,2}.at(zoom_->GetSelection()));});
         grid_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){canvas_->setGrid(std::array<int,4>{1,4,8,16}.at(grid_->GetSelection()));});
         state_->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){canvas_->setState(state_->GetSelection());});
+        bounds_->Bind(wxEVT_CHECKBOX,[this](wxCommandEvent&){canvas_->setBounds(bounds_->GetValue());});
         tabs_->Bind(wxEVT_AUINOTEBOOK_PAGE_CHANGING,[this](wxAuiNotebookEvent& event){if(!switching_&&!commitGeometry())event.Veto();});
         tabs_->Bind(wxEVT_AUINOTEBOOK_PAGE_CHANGED,[this](wxAuiNotebookEvent& event){if(!switching_) {rememberView();showDocument(indexOf(neotabs::pageForIndex(tabs_,event.GetSelection())));}event.Skip();});
         tabs_->Bind(wxEVT_AUINOTEBOOK_PAGE_CLOSE,[this](wxAuiNotebookEvent& event){event.Veto();closeDocument(indexOf(neotabs::pageForIndex(tabs_,event.GetSelection())));});
         for(auto* window:std::array<wxWindow*,4>{this,tree_,canvas_,properties_})window->SetDropTarget(new FileDrop([this](const auto& path){return openFile(path);}));
         Bind(wxEVT_DPI_CHANGED,[this](wxDPIChangedEvent& event){CallAfter([this]{applyAppearance();});event.Skip();});
+        for(const auto& [id,tip]:std::initializer_list<std::pair<int,const char*>>{
+            {ID_New,"Create an empty layout. Add Control copies a native control from another GUI."},
+            {ID_Open,"Open one or more .gui files in separate tabs."},
+            {ID_Save,"Save this layout to a .gui file. Archive resources require a working copy."},
+            {ID_SaveAs,"Save this layout under a different filename."},
+            {ID_GeneratePatcher,"Compare with a clean GUI and generate or merge TSLPatcher/HoloPatcher instructions."},
+            {ID_ImportControl,"Choose a .gui file, then choose the native control to add."},
+            {ID_Duplicate,"Copy the selected control with a unique tag/ID and a small position offset."},
+            {ID_Delete,"Delete the selected control. Undo restores it."}})FindWindow(id)->SetToolTip(tip);
         setModuleStatusText("Open a .gui layout. Select Game assets to load its textures and fonts.");showProperties();refresh();applyAppearance();
     }
     ~Editor() override {DestroyChildren();}
@@ -319,11 +363,11 @@ public:
     }
     void resourceContextChanged() override {
         try {
-            Resolver host;std::map<std::filesystem::path,Resolver> games;
+            Resolver host;std::map<std::tuple<std::filesystem::path,std::filesystem::path,std::filesystem::path>,Resolver> games;
             for(auto& d:documents_) {
                 if(d.hostAssets) {if(!host)host=context_.captureResourceResolver();d.resolver=host;}
                 else if(d.installation) {
-                    auto [session,inserted]=games.try_emplace(d.installation->installPath);
+                    auto [session,inserted]=games.try_emplace(std::make_tuple(d.installation->installPath,d.installation->overridePath,d.installation->tlkPath));
                     if(inserted) {session->second=captureGameResources(*d.installation);if(context_.captureModFolder)session->second=neoshared::bif::ModFolder::layer(context_.captureModFolder(),std::move(session->second));}
                     d.resolver=session->second;
                 }
@@ -343,14 +387,14 @@ private:
         return std::size_t(std::find_if(documents_.begin(),documents_.end(),[&](const auto& d){return d.tabPage==page;})-documents_.begin());
     }
     void rememberView() {
-        auto& d=document();d.game=game_->GetSelection();d.layout=layoutSource_->GetSelection();d.zoom=zoom_->GetSelection();d.grid=grid_->GetSelection();d.state=state_->GetSelection();d.preview=preview_->GetValue();d.scroll=canvas_->GetViewStart();
+        auto& d=document();d.game=game_->GetSelection();d.layout=layoutSource_->GetSelection();d.zoom=zoom_->GetSelection();d.grid=grid_->GetSelection();d.state=state_->GetSelection();d.preview=preview_->GetValue();d.allFields=all_->GetValue();d.bounds=bounds_->GetValue();d.scroll=canvas_->GetViewStart();
     }
     void showDocument(std::size_t index) {
         active_=index;auto& d=document();geometryDirty_=false;
         neotabs::changeSelectionToPage(tabs_,d.tabPage);
-        game_->SetSelection(d.game);layoutSource_->SetSelection(d.layout);zoom_->SetSelection(d.zoom);grid_->SetSelection(d.grid);state_->SetSelection(d.state);preview_->SetValue(d.preview);
+        game_->SetSelection(d.game);layoutSource_->SetSelection(d.layout);zoom_->SetSelection(d.zoom);grid_->SetSelection(d.grid);state_->SetSelection(d.state);preview_->SetValue(d.preview);all_->SetValue(d.allFields);bounds_->SetValue(d.bounds);
         renderer_.clear();renderer_.setK2(d.game==1);
-        canvas_->setAssets(false);canvas_->setZoom(std::array<double,4>{0,.5,1,2}.at(d.zoom));canvas_->setGrid(std::array<int,4>{1,4,8,16}.at(d.grid));canvas_->setState(d.state);
+        canvas_->setAssets(false);canvas_->setZoom(std::array<double,4>{0,.5,1,2}.at(d.zoom));canvas_->setGrid(std::array<int,4>{1,4,8,16}.at(d.grid));canvas_->setState(d.state);canvas_->setBounds(d.bounds);
         rebuildTree();showProperties();refresh();canvas_->Scroll(d.scroll);updatePreview();
     }
     bool confirmActiveClose() {
@@ -361,11 +405,13 @@ private:
     }
     bool closeDocument(std::size_t index) {
         if(!commitGeometry())return false;
-        rememberView();showDocument(index);if(!confirmActiveClose())return false;
+        rememberView();auto* keep=document().tabPage;auto* closing=documents_.at(index).tabPage;
+        const auto& target=documents_.at(index);
+        if(target.model&&target.history.at(target.historyIndex).bytes!=target.saved) {showDocument(index);if(!confirmActiveClose())return false;}
         canvas_->setDocument(nullptr,-1);switching_=true;
-        neotabs::deleteTabPage(tabs_,document().tabPage);documents_.erase(documents_.begin()+std::ptrdiff_t(index));
+        neotabs::deleteTabPage(tabs_,closing);documents_.erase(documents_.begin()+std::ptrdiff_t(index));
         if(documents_.empty()) {documents_.emplace_back();documents_.back().tabPage=neotabs::addTabPage(tabs_,"GUI layout",false);}
-        switching_=false;showDocument(indexOf(neotabs::currentPage(tabs_)));return true;
+        switching_=false;showDocument(indexOf(keep==closing?neotabs::currentPage(tabs_):keep));return true;
     }
     void closeOtherDocuments() {
         const auto* keep=document().tabPage;
@@ -383,12 +429,12 @@ private:
         addDocument(std::move(d),true);
     }
     void addDocument(Document d,bool modified=false) {
-        d.history.push_back({d.model->gff().SaveBytes(),-1});if(!modified)d.saved=d.history.front().bytes;
-        d.resolver=document().resolver;d.installation=document().installation;d.hostAssets=document().hostAssets;d.game=game_->GetSelection();d.layout=1;
-        if(context_.captureResourceResolver) {d.resolver=context_.captureResourceResolver();d.installation.reset();d.hostAssets=true;}
-        else if(context_.resolveResource) {d.resolver=[resolve=context_.resolveResource](const std::string& name,std::uint16_t type,const neoshared::bif::JobControl&){return resolve(name,type);};d.installation.reset();}
+        d.history.push_back({d.model->gff().SaveBytes(),-1,{}});if(!modified)d.saved=d.history.front().bytes;
+        d.resolver=document().resolver;d.installation=document().installation;d.hostAssets=document().hostAssets;d.assets=document().assets;d.game=game_->GetSelection();d.layout=1;
+        if(context_.captureResourceResolver) {d.resolver=context_.captureResourceResolver();d.installation.reset();d.hostAssets=true;d.assets="NeoToolKit game browser";}
+        else if(context_.resolveResource) {d.resolver=[resolve=context_.resolveResource](const std::string& name,std::uint16_t type,const neoshared::bif::JobControl&){return resolve(name,type);};d.installation.reset();d.assets="Game browser";}
         if(!context_.embedded&&!d.resolver)
-            if(const auto installation=neogames::resolver().resolve(*neogames::findGame(d.game==1?"kotor2":"kotor"))) {d.installation=installation;d.resolver=captureGameResources(*installation);}
+            if(const auto installation=neogames::resolver().resolve(*neogames::findGame(d.game==1?"kotor2":"kotor"))) {d.installation=installation;d.resolver=captureGameResources(*installation);d.assets=std::string(d.game==1?"KOTOR 2: ":"KOTOR 1: ")+neoshared::pathToUtf8(installation->installPath);}
         if(d.installation)d.model->loadTlk(d.installation->tlkPath);
         else if(document().model&&document().model->tlk().loaded())d.model->loadTlk(document().model->tlk().filename());
         d.layout=!d.path.empty()||d.source.priority<=neoshared::ResourcePriority::Directory?1:0;
@@ -417,31 +463,43 @@ private:
     }
     void refreshCommands() {
         const bool loaded=bool(document().model),control=loaded&&document().selected>=0;
-        for(int id:{ID_Save,ID_SaveAs,ID_Tlk,ID_Find,ID_FindNext,ID_Paste,ID_ImportControl,ID_GeneratePatcher})enableModuleCommand(id,loaded);
-        for(int id:{ID_Copy,ID_Duplicate,ID_Delete,ID_Front,ID_Back})enableModuleCommand(id,control);
+        for(int id:{ID_SaveAs,ID_Tlk,ID_Find,ID_FindNext,ID_Paste,ID_ImportControl,ID_GeneratePatcher})enableModuleCommand(id,loaded);
+        enableModuleCommand(ID_Save,loaded&&(dirty()||document().path.empty()));
+        for(int id:{ID_Copy,ID_Duplicate,ID_Delete})enableModuleCommand(id,control);
+        enableModuleCommand(ID_Front,control&&std::size_t(document().selected+1)<controlList().count());enableModuleCommand(ID_Back,control&&document().selected>0);
         enableModuleCommand(ID_CopyValue,properties_->GetSelectedItemCount()!=0);
+        const auto row=properties_->GetNextItem(-1,wxLIST_NEXT_ALL,wxLIST_STATE_SELECTED);
+        enableModuleCommand(ID_EditValue,row>=0&&rows_.at(std::size_t(row)).editable);
         enableModuleCommand(ID_CloseOthers,documents_.size()>1);enableModuleCommand(ID_Next,documents_.size()>1);enableModuleCommand(ID_Previous,documents_.size()>1);
         enableModuleCommand(ID_HostAssets,bool(context_.captureResourceResolver));
-        enableModuleCommand(ID_Undo,loaded&&document().historyIndex>0);enableModuleCommand(ID_Redo,loaded&&!geometryDirty_&&document().historyIndex+1<document().history.size());
-        for(int id:{ID_Save,ID_SaveAs,ID_Undo,ID_Redo})FindWindow(id)->Enable(commandEnabled(id));
+        enableModuleCommand(ID_Undo,loaded&&(geometryDirty_||document().historyIndex>0));enableModuleCommand(ID_Redo,loaded&&!geometryDirty_&&document().historyIndex+1<document().history.size());
+        for(int id:{ID_Save,ID_SaveAs,ID_Undo,ID_Redo,ID_ImportControl,ID_Duplicate,ID_Delete,ID_GeneratePatcher,ID_EditValue,ID_CopyValue})FindWindow(id)->Enable(commandEnabled(id));
+        const auto saveLabel=document().path.empty()?"Save...":"Save";FindWindow(ID_Save)->SetLabel(saveLabel);saveItem_->SetItemLabel(wxString("&")+saveLabel+"\tCtrl+S");
+        apply_->Enable(loaded&&geometryDirty_);revert_->Enable(loaded&&geometryDirty_);
         preview_->Enable(loaded&&bool(document().resolver));
-        for(auto* choice:{game_,layoutSource_,zoom_,grid_,state_})choice->Enable(loaded);
+        for(auto* choice:{game_,zoom_,grid_})choice->Enable(loaded);
+        bounds_->Enable(loaded);layoutSource_->Enable(loaded&&game_->GetSelection()==0);state_->Enable(loaded&&preview_->GetValue());
     }
     void refresh() {
         if(document().model)renderer_.setLayout(document().path.empty()?document().source.fileName:neoshared::pathToUtf8(document().path.filename()),layoutSource_->GetSelection()==1);
         canvas_->setDocument(document().model?document().model->gff().root():nullptr,document().selected);
         setModuleTitle(wxui::toWx(std::string("NeoGUI — ")+(document().model?(document().path.empty()?document().source.fileName:neoshared::pathToUtf8(document().path.filename()))+(dirty()?" *":""):"GUI layout editor")));
         neotabs::setTabLabel(tabs_,document().tabPage,document().model?(document().path.empty()?document().source.fileName:neoshared::pathToUtf8(document().path.filename())):"GUI layout",dirty());
+        const auto description=document().path.empty()?document().source.sourceDescription:document().source.sourceDescription+"\nWorking file: "+neoshared::pathToUtf8(document().path);
+        tabs_->SetPageToolTip(std::size_t(neotabs::pageIndexFor(tabs_,document().tabPage)),wxui::toWx(description));
+        auto assets=document().assets.empty()?std::string("Preview assets: choose a source from Assets"):"Preview assets: "+document().assets;
+        if(document().model)assets+=document().model->tlk().loaded()?" | Talk table: "+neoshared::pathToUtf8(document().model->tlk().filename()):" | Talk table: not loaded (Assets menu)";
+        assetInfo_->SetLabel(wxui::toWx(assets));assetInfo_->SetToolTip(wxui::toWx(assets));
         refreshCommands();
         setModuleStatusText(document().model?document().source.sourceDescription+" | "+std::to_string(controls(*document().model->gff().root()).count())+" controls | "+(dirty()?"Modified":"Saved"):"Open a GUI layout.");
     }
     void recordEdit(bool rebuild=true) {
         auto snapshot=document().model->gff().SaveBytes();
-        if(snapshot!=document().history.at(document().historyIndex).bytes) {document().history.resize(document().historyIndex+1);document().history.push_back({std::move(snapshot),document().selected});++document().historyIndex;}
+        if(snapshot!=document().history.at(document().historyIndex).bytes) {document().history.resize(document().historyIndex+1);document().history.push_back({std::move(snapshot),document().selected,document().fieldPath});++document().historyIndex;}
         if(rebuild)rebuildTree();
         showProperties();refresh();
     }
-    void undo(std::size_t index) {const auto& snapshot=document().history.at(index);document().model->gff().LoadBytes(snapshot.bytes);document().model->updateTextFormat();document().selected=snapshot.selected;document().historyIndex=index;rebuildTree();showProperties();refresh();updatePreview();}
+    void undo(std::size_t index) {const auto& snapshot=document().history.at(index);document().model->gff().LoadBytes(snapshot.bytes);document().model->updateTextFormat();document().selected=snapshot.selected;document().fieldPath=snapshot.fieldPath;document().historyIndex=index;rebuildTree();showProperties();refresh();updatePreview();}
     void rebuildTree() {
         rebuilding_=true;tree_->Freeze();tree_->DeleteAllItems();items_.clear();
         if(document().model) {
@@ -453,17 +511,24 @@ private:
     std::string prefix() const {return document().selected<0?std::string{}:"CONTROLS\\"+std::to_string(document().selected)+"\\";}
     const GffStruct& selectedRecord() const {return document().selected<0?*document().model->gff().root():*controls(*document().model->gff().root()).GetStruct(std::size_t(document().selected));}
     void showProperties() {
-        properties_->DeleteAllItems();rows_.clear();enableModuleCommand(ID_CopyValue,false);geometryDirty_=false;apply_->Enable(bool(document().model));all_->Enable(bool(document().model));for(auto* box:geometry_) {box->Enable(bool(document().model));box->ChangeValue({});}
-        if(!document().model)return;
+        properties_->Freeze();properties_->DeleteAllItems();rows_.clear();geometryDirty_=false;document().allFields=all_->GetValue();all_->Enable(bool(document().model));for(auto* box:geometry_) {box->Enable(bool(document().model));box->ChangeValue({});}
+        selectionInfo_->SetLabel("Open a layout, then select a control.");
+        if(!document().model) {properties_->Thaw();refreshCommands();return;}
+        const auto selection=document().selected<0?std::string("Layout bounds"):"Control bounds: "+string(selectedRecord(),"TAG")+" ["+std::to_string(integer(selectedRecord(),"ID"))+"]";
+        selectionInfo_->SetLabel(wxui::toWx(selection));selectionInfo_->SetToolTip(wxui::toWx(selection));
         const auto rectangle=extent(selectedRecord());const std::array<double,4> dimensions={rectangle.m_x,rectangle.m_y,rectangle.m_width,rectangle.m_height};
         for(std::size_t i=0;i<geometry_.size();++i)geometry_[i]->ChangeValue(std::to_string(int(dimensions[i])));
         const auto selected=prefix();
         for(auto row:document().model->rows())if(all_->GetValue()||(selected.empty()?row.path.compare(0,9,"CONTROLS\\")!=0:row.path==selected.substr(0,selected.size()-1)||row.path.compare(0,selected.size(),selected)==0)) {
-            const auto i=properties_->InsertItem(properties_->GetItemCount(),wxui::toWx(row.path));properties_->SetItem(i,1,wxui::toWx(row.type));properties_->SetItem(i,2,wxui::toWx(row.value));properties_->SetItem(i,3,wxui::toWx(row.resolved));rows_.push_back(std::move(row));
+            const auto label=all_->GetValue()||selected.empty()?row.path:row.path==selected.substr(0,selected.size()-1)?"(Control)":row.path.substr(selected.size());
+            const auto i=properties_->InsertItem(properties_->GetItemCount(),wxui::toWx(label));properties_->SetItem(i,1,wxui::toWx(row.type));properties_->SetItem(i,2,wxui::toWx(row.value));properties_->SetItem(i,3,wxui::toWx(row.resolved));rows_.push_back(std::move(row));
         }
+        for(std::size_t i=0;i<rows_.size();++i)if(rows_[i].path==document().fieldPath) {properties_->SetItemState(long(i),wxLIST_STATE_SELECTED|wxLIST_STATE_FOCUSED,wxLIST_STATE_SELECTED|wxLIST_STATE_FOCUSED);properties_->EnsureVisible(long(i));break;}
+        properties_->Thaw();refreshCommands();
     }
     void editProperty(std::size_t index) {
-        const auto row=rows_.at(index);if(!row.editable||!commitGeometry())return;
+        if(!rows_.at(index).editable||!commitGeometry())return;
+        const auto row=rows_.at(index);
         wxTextEntryDialog dialog(this,wxui::toWx(row.path+" ("+row.type+")"),"Edit GUI field",wxui::toWx(row.value),wxOK|wxCANCEL|wxRESIZE_BORDER|wxTE_MULTILINE);
         wxui::applyTheme(&dialog,darkMode_);neoview::applyFontScale(&dialog,fontScale_);
         dialog.SetSize(FromDIP(wxSize(550,240)));if(dialog.ShowModal()!=wxID_OK)return;
@@ -483,10 +548,13 @@ private:
     bool commitGeometry() {return !geometryDirty_||applyExtent();}
     bool save(bool choose) {
         try {if(!commitGeometry())return false;auto output=document().path;
-            if(choose||output.empty()) {wxFileDialog dialog(this,"Save GUI layout",neosettings::pathToWx(output.parent_path()),wxui::toWx(output.empty()?document().source.fileName:neoshared::pathToUtf8(output.filename())),"GUI layouts (*.gui)|*.gui;*.GUI",wxFD_SAVE|wxFD_OVERWRITE_PROMPT);if(dialog.ShowModal()!=wxID_OK)return false;output=neosettings::pathFromWx(dialog.GetPath());}
+            const bool detached=choose||output.empty();
+            if(detached) {wxFileDialog dialog(this,"Save GUI layout",neosettings::pathToWx(output.parent_path()),wxui::toWx(output.empty()?document().source.fileName:neoshared::pathToUtf8(output.filename())),"GUI layouts (*.gui)|*.gui;*.GUI",wxFD_SAVE|wxFD_OVERWRITE_PROMPT);if(dialog.ShowModal()!=wxID_OK)return false;output=neosettings::pathFromWx(dialog.GetPath());}
             neoshared::checkGffOutputType(output,".gui");auto inputs=document().source.protectedInputs;inputs.insert(inputs.end(),document().assetInputs.begin(),document().assetInputs.end());if(document().model->tlk().loaded())inputs.push_back(document().model->tlk().filename());
             for(const auto& other:documents_)if(&other!=&document()) {if(!other.path.empty())inputs.push_back(other.path);inputs.insert(inputs.end(),other.source.protectedInputs.begin(),other.source.protectedInputs.end());inputs.insert(inputs.end(),other.assetInputs.begin(),other.assetInputs.end());if(other.model&&other.model->tlk().loaded())inputs.push_back(other.model->tlk().filename());}
-            neoshared::checkResourceOutput(output,inputs);validateHostOutput(output);document().model->gff().SaveFile(output);document().path=neosettings::storedPath(output);document().saved=document().history.at(document().historyIndex).bytes;settings_.addRecentFile(document().path);refreshRecentFiles();neogames::resolver().inferFromOpenedPath(document().path);tree_->SetItemText(items_.front(),neosettings::pathToWx(document().path.filename()));refresh();return true;
+            neoshared::checkResourceOutput(output,inputs);validateHostOutput(output);document().model->gff().SaveFile(output);document().path=neosettings::storedPath(output);
+            if(detached)layoutSource_->SetSelection(1);
+            document().saved=document().history.at(document().historyIndex).bytes;settings_.addRecentFile(document().path);refreshRecentFiles();neogames::resolver().inferFromOpenedPath(document().path);tree_->SetItemText(items_.front(),neosettings::pathToWx(document().path.filename()));refresh();return true;
         } catch(const std::exception& error){wxui::showError(this,error);return false;}
     }
     const neoshared::texture::TextureData& texture(const std::string& name) {
@@ -502,40 +570,42 @@ private:
         try {if(preview_->GetValue())cacheAssets();canvas_->setAssets(preview_->GetValue());}
         catch(const std::exception& error){preview_->SetValue(false);canvas_->setAssets(false);wxui::showError(this,error);}
         document().preview=preview_->GetValue();
+        refreshCommands();
     }
     void findNext(bool prompt) {
         if(!commitGeometry())return;
-        if(prompt||findText_.empty()) {
-            wxTextEntryDialog dialog(this,"Search tags, IDs, field paths, values and resolved text:","Find GUI control or field",wxui::toWx(findText_));
+        if(prompt||document().findText.empty()) {
+            wxTextEntryDialog dialog(this,"Search tags, IDs, field paths, values and resolved text:","Find GUI control or field",wxui::toWx(document().findText));
             wxui::applyTheme(&dialog,darkMode_);neoview::applyFontScale(&dialog,fontScale_);
             if(dialog.ShowModal()!=wxID_OK)return;
-            findText_=wxui::toStd(dialog.GetValue());findPath_.clear();if(findText_.empty())return;
+            document().findText=wxui::toStd(dialog.GetValue());document().findPath.clear();if(document().findText.empty())return;
         }
-        const auto fields=document().model->rows();const auto query=wxui::toWx(findText_).Lower();
-        const auto previous=std::find_if(fields.begin(),fields.end(),[&](const auto& row){return row.path==findPath_;});
+        const auto fields=document().model->rows();const auto query=wxui::toWx(document().findText).Lower();
+        const auto previous=std::find_if(fields.begin(),fields.end(),[&](const auto& row){return row.path==document().findPath;});
         const auto start=previous==fields.end()?0:std::size_t(previous-fields.begin()+1);
         for(std::size_t offset=0;offset<fields.size();++offset) {
             const auto& row=fields[(start+offset)%fields.size()];
             if(!wxui::toWx(row.path+" "+row.value+" "+row.resolved).Lower().Contains(query))continue;
-            findPath_=row.path;all_->SetValue(false);
+            document().findPath=row.path;
             const auto selected=row.path.compare(0,9,"CONTROLS\\")==0?int(std::stoul(row.path.substr(9))):-1;
-            tree_->SelectItem(items_.at(std::size_t(selected+1)));showProperties();
-            const auto found=std::find_if(rows_.begin(),rows_.end(),[&](const auto& value){return value.path==row.path;});
-            const auto index=long(found-rows_.begin());properties_->SetItemState(index,wxLIST_STATE_SELECTED|wxLIST_STATE_FOCUSED,wxLIST_STATE_SELECTED|wxLIST_STATE_FOCUSED);properties_->EnsureVisible(index);properties_->SetFocus();
+            tree_->SelectItem(items_.at(std::size_t(selected+1)));document().fieldPath=row.path;showProperties();properties_->SetFocus();
             setModuleStatusText("Found: "+row.path);return;
         }
-        setModuleStatusText("No match for: "+findText_);
+        setModuleStatusText("No match for: "+document().findText);
     }
     GffList& controlList() {return *static_cast<GffList*>(document().model->gff().root()->GetFieldByLabel("CONTROLS"));}
-    void appendControl(const GffStruct& original) {
+    void appendControl(const GffStruct& original,int offset=0) {
         auto copy=std::unique_ptr<GffStruct>(static_cast<GffStruct*>(original.Clone().release()));
         std::set<int> ids;std::set<std::string> tags;
+        ids.insert(integer(*document().model->gff().root(),"ID"));tags.insert(string(*document().model->gff().root(),"TAG"));
         for(const auto& control:controlList().allStructs()) {ids.insert(integer(*control,"ID"));tags.insert(string(*control,"TAG"));}
         int id=1;while(ids.count(id))++id;
         auto tag=string(*copy,"TAG");const auto base=tag;int suffix=1;while(tags.count(tag))tag=base+"_"+std::to_string(suffix++);
         static_cast<GffIntField*>(copy->GetFieldByLabel("ID"))->value=id;
         static_cast<GffExoStringField*>(copy->GetFieldByLabel("TAG"))->SetString(tag);
-        controlList().AddStruct(std::move(copy));document().selected=int(controlList().count()-1);recordEdit();updatePreview();
+        auto* bounds=static_cast<GffStruct*>(copy->GetFieldByLabel("EXTENT"));
+        static_cast<GffIntField*>(bounds->GetFieldByLabel("LEFT"))->value+=offset;static_cast<GffIntField*>(bounds->GetFieldByLabel("TOP"))->value+=offset;
+        controlList().AddStruct(std::move(copy));document().selected=int(controlList().count()-1);document().fieldPath=prefix()+"TAG";recordEdit();updatePreview();
     }
     void copyControl() {
         GffFile clipboard;clipboard.NewFile("GUI ");auto list=std::make_unique<GffList>("CONTROLS");
@@ -543,6 +613,7 @@ private:
         wxClipboardLocker lock;if(!lock)throw std::runtime_error("Cannot open the clipboard.");
         auto* data=new wxCustomDataObject(wxDataFormat("NeoGUI.Control"));data->SetData(bytes.size(),bytes.data());
         if(!wxTheClipboard->SetData(data))throw std::runtime_error("Cannot copy the GUI control.");
+        wxTheClipboard->Flush();
     }
     void pasteControl() {
         wxCustomDataObject data(wxDataFormat("NeoGUI.Control"));
@@ -559,15 +630,16 @@ private:
         wxSingleChoiceDialog picker(this,"Choose the native control to add:","Add GUI control",choices);wxui::applyTheme(&picker,darkMode_);neoview::applyFontScale(&picker,fontScale_);
         if(picker.ShowModal()==wxID_OK)appendControl(*list.GetStruct(std::size_t(picker.GetSelection())));
     }
-    void deleteControl() {controlList().DeleteStruct(std::uint32_t(document().selected));document().selected=-1;recordEdit();updatePreview();}
+    void deleteControl() {const auto selected=document().selected;controlList().DeleteStruct(std::uint32_t(selected));document().selected=std::min(selected,int(controlList().count())-1);document().fieldPath.clear();recordEdit();updatePreview();}
     void reorderControl(bool front) {
         auto& controls=controlList().allStructs();auto moved=std::move(controls.at(std::size_t(document().selected)));controls.erase(controls.begin()+document().selected);
         if(front)controls.push_back(std::move(moved));else controls.insert(controls.begin(),std::move(moved));
-        document().selected=front?int(controls.size()-1):0;recordEdit();
+        document().selected=front?int(controls.size()-1):0;document().fieldPath.clear();recordEdit();
     }
     void copyFieldValue() {
         const auto index=properties_->GetNextItem(-1,wxLIST_NEXT_ALL,wxLIST_STATE_SELECTED);wxClipboardLocker lock;
         if(!lock||!wxTheClipboard->SetData(new wxTextDataObject(wxui::toWx(rows_.at(std::size_t(index)).value))))throw std::runtime_error("Cannot copy the field value.");
+        wxTheClipboard->Flush();
     }
     void generatePatcher() {
         if(!commitGeometry())return;
@@ -577,13 +649,13 @@ private:
         neoshared::ResourceDocument source{neoshared::pathToUtf8(*baseline),neoshared::pathToUtf8(baseline->filename()),neoshared::pathToUtf8(*baseline),2047,neoshared::texture::readFileBytes(*baseline),{}};
         neoshared::loadGffResource(source,original,"GUI");
         if(document().model->tlk().loaded())original.loadTlk(document().model->tlk().filename());
-        const auto name=wxui::promptText(this,"Patch Target Filename","GUI filename to patch in the user's install:",document().path.empty()?document().source.fileName:neoshared::pathToUtf8(document().path.filename()));
+        const auto name=wxui::promptText(this,"Patch Target Filename","Installed GUI filename (usually the baseline's name):",neoshared::pathToUtf8(baseline->filename()));
         if(!name)return;
         neoshared::checkGffOutputType(neoshared::pathFromUtf8(*name),".gui");
-        const auto output=wxui::choosePatcherOutput(this);
-        if(!output)return;
         auto project=neotsl::diffGffFlatTable(original.toTable(),document().model->toTable(),*name,false);
         neotsl::throwIfUnsupported(project);
+        const auto output=wxui::choosePatcherOutput(this);
+        if(!output)return;
         if(!output->writesToIni()) {wxui::showIniFragmentDialog(this,"GUI Patcher INI Fragment",project,{*name});return;}
         project.assets.push_back({{},*name,std::move(source.bytes)});
         neoshared::checkResourceOutput(output->iniPath,openPaths());
@@ -594,28 +666,31 @@ private:
         wxui::showMessage(this,"GUI Patcher Package Generated",std::string(report.mergedExisting?"Merged GUI instructions into:\n":"Created installer INI:\n")+neoshared::pathToUtf8(report.iniPath)+"\n\nThe clean GUI baseline was staged beside the selected INI.");
     }
     void useGame(const neogames::GameInstall& installation) {
+        if(!commitGeometry())return;
         wxBusyCursor busy;
         auto resolve=captureGameResources(installation);
         if(context_.captureModFolder)resolve=neoshared::bif::ModFolder::layer(context_.captureModFolder(),std::move(resolve));
-        document().resolver=std::move(resolve);document().installation=installation;document().hostAssets=false;
-        game_->SetSelection(installation.id=="kotor2"?1:0);renderer_.setK2(game_->GetSelection()==1);
         if(document().model)document().model->loadTlk(installation.tlkPath);
+        document().resolver=std::move(resolve);document().installation=installation;document().hostAssets=false;
+        document().assets=std::string(installation.id=="kotor2"?"KOTOR 2: ":"KOTOR 1: ")+neoshared::pathToUtf8(installation.installPath);
+        game_->SetSelection(installation.id=="kotor2"?1:0);renderer_.setK2(game_->GetSelection()==1);
         resetAssets();
     }
     void assetFolder(std::filesystem::path directory={}) {
         if(directory.empty()) {wxDirDialog dialog(this,"Choose extracted GUI textures and fonts");if(dialog.ShowModal()!=wxID_OK)return;directory=neosettings::pathFromWx(dialog.GetPath());}
+        if(!commitGeometry())return;
         auto files=std::make_shared<std::map<Key,std::filesystem::path>>();
         for(const auto& entry:std::filesystem::directory_iterator(directory)) {
             auto extension=neoshared::pathToUtf8(entry.path().extension());std::transform(extension.begin(),extension.end(),extension.begin(),[](unsigned char c){return char(std::tolower(c));});
             for(const auto& [type,suffix]:textureTypes)if(extension==suffix)(*files)[{neoshared::material::textureResourceKey(neoshared::pathToUtf8(entry.path().stem())),type}]=entry.path();
             if(extension==".txi")(*files)[{neoshared::material::textureResourceKey(neoshared::pathToUtf8(entry.path().stem())),2022}]=entry.path();
         }
-        document().installation.reset();document().hostAssets=false;document().resolver=[files](const std::string& name,std::uint16_t type,const neoshared::bif::JobControl&)->std::optional<neoshared::ResourceDocument> {
+        document().installation.reset();document().hostAssets=false;document().assets="Extracted folder: "+neoshared::pathToUtf8(directory);document().resolver=[files](const std::string& name,std::uint16_t type,const neoshared::bif::JobControl&)->std::optional<neoshared::ResourceDocument> {
             const auto file=files->find({name,type});if(file==files->end())return {};
             const auto& path=file->second;return neoshared::ResourceDocument{neoshared::pathToUtf8(path),neoshared::pathToUtf8(path.filename()),neoshared::pathToUtf8(path),type,neoshared::texture::readFileBytes(path),{path}};
         };resetAssets();
     }
-    void resetAssets() {preview_->SetValue(false);canvas_->setAssets(false);document().textures.clear();document().assetInputs.clear();renderer_.clear();refresh();}
+    void resetAssets() {canvas_->setAssets(false);document().textures.clear();document().assetInputs.clear();renderer_.clear();showProperties();refresh();updatePreview();}
     void command(int id) {
         try {switch(id) {
             case ID_New:newGui();break;
@@ -626,16 +701,18 @@ private:
             case ID_Find:findNext(true);break;case ID_FindNext:findNext(false);break;
             case ID_Copy:if(commitGeometry())copyControl();break;
             case ID_Paste:if(commitGeometry())pasteControl();break;
-            case ID_Duplicate:if(commitGeometry())appendControl(selectedRecord());break;
+            case ID_Duplicate:if(commitGeometry())appendControl(selectedRecord(),std::max(8,std::array<int,4>{1,4,8,16}.at(grid_->GetSelection())));break;
             case ID_Delete:if(commitGeometry())deleteControl();break;
             case ID_ImportControl:if(commitGeometry())importControl();break;
             case ID_Front:if(commitGeometry())reorderControl(true);break;case ID_Back:if(commitGeometry())reorderControl(false);break;
             case ID_CopyValue:copyFieldValue();break;
+            case ID_EditValue:editProperty(std::size_t(properties_->GetNextItem(-1,wxLIST_NEXT_ALL,wxLIST_STATE_SELECTED)));break;
+            case ID_RevertGeometry:showProperties();refresh();break;
             case ID_GeneratePatcher:generatePatcher();break;
-            case ID_Undo:if(commitGeometry())undo(document().historyIndex-1);break;case ID_Redo:if(commitGeometry())undo(document().historyIndex+1);break;
+            case ID_Undo:if(geometryDirty_) {showProperties();refresh();}else undo(document().historyIndex-1);break;case ID_Redo:undo(document().historyIndex+1);break;
             case ID_Assets:assetFolder();break;
-            case ID_HostAssets: document().installation.reset();document().hostAssets=true;document().resolver=context_.captureResourceResolver();resetAssets();break;
-            case ID_Tlk: {wxFileDialog dialog(this,"Load GUI talk table",{},{},"Talk tables (*.tlk)|*.tlk;*.TLK",wxFD_OPEN|wxFD_FILE_MUST_EXIST);if(dialog.ShowModal()==wxID_OK&&commitGeometry()) {document().model->loadTlk(neosettings::pathFromWx(dialog.GetPath()));showProperties();updatePreview();}break;}
+            case ID_HostAssets: if(commitGeometry()) {auto resolve=context_.captureResourceResolver();document().installation.reset();document().hostAssets=true;document().assets="NeoToolKit game browser";document().resolver=std::move(resolve);resetAssets();}break;
+            case ID_Tlk: {wxFileDialog dialog(this,"Load GUI talk table",{},{},"Talk tables (*.tlk)|*.tlk;*.TLK",wxFD_OPEN|wxFD_FILE_MUST_EXIST);if(dialog.ShowModal()==wxID_OK&&commitGeometry()) {document().model->loadTlk(neosettings::pathFromWx(dialog.GetPath()));showProperties();refresh();updatePreview();}break;}
             case ID_DarkMode:darkMode_=darkModeItem_->IsChecked();settings_.setDarkMode(darkMode_);applyAppearance();break;
             case ID_FontIncrease:fontScaleWheelFilter_.reset();changeFontScale(1);break;
             case ID_FontDecrease:fontScaleWheelFilter_.reset();changeFontScale(-1);break;
@@ -652,12 +729,13 @@ private:
     unsigned nextUntitled_{};
     wxAuiNotebook* tabs_{};
     bool switching_{},geometryDirty_{};
-    std::string findText_,findPath_;
     neosettings::AppSettings settings_{"NeoGUI"};
     neoview::FontScaleWheelFilter fontScaleWheelFilter_;
     std::unique_ptr<neogames::OpenGameDirectoryMenu> gameDirectoryMenu_;
     wxMenu* recentFilesMenu_{};
     wxMenuItem* darkModeItem_{};
+    wxMenuItem* saveItem_{};
+    wxStaticText* assetInfo_{};wxStaticText* selectionInfo_{};
     bool darkMode_{};
     double fontScale_{neoview::kDefaultFontScale};
     GuiRenderer renderer_;
@@ -665,8 +743,8 @@ private:
     wxTreeCtrl* tree_{};
     wxListCtrl* properties_{};
     wxChoice* game_{},*layoutSource_{},*zoom_{},*grid_{},*state_{};
-    wxCheckBox* preview_{};wxCheckBox* all_{};
-    wxButton* apply_{};
+    wxCheckBox* preview_{};wxCheckBox* all_{};wxCheckBox* bounds_{};
+    wxButton* apply_{};wxButton* revert_{};
     std::array<wxTextCtrl*,4> geometry_{};
     std::vector<wxTreeItemId> items_;
     std::vector<GffFieldRow> rows_;
