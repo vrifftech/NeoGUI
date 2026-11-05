@@ -49,6 +49,25 @@ using Resolver=neoshared::ResourceResolver;
 using Key=std::pair<std::string,std::uint16_t>;
 constexpr std::pair<std::uint16_t,const char*> textureTypes[]={{3007,".tpc"},{3006,".txb"},{3,".tga"},{2033,".dds"}};
 
+std::optional<neogames::GameInstall> guiInstallation(const std::filesystem::path& path,int selectedGame) {
+    const auto& settings=neogames::resolver().settings();
+    auto directory=path.parent_path();
+    while(!directory.empty()) {
+        if(neogames::isRegularFilePath(directory/"chitin.key")) {
+            auto local=neoshared::game::inspectGameInstallation(directory);
+            if(local&&(local->id=="kotor"||local->id=="kotor2")) {
+                for(const auto& saved:settings.readSaved(*neogames::findGame(local->id)))
+                    if(neosettings::samePathForMru(saved.installPath,local->installPath))return saved;
+                return local;
+            }
+        }
+        const auto parent=directory.parent_path();
+        if(parent==directory)break;
+        directory=parent;
+    }
+    return settings.read(*neogames::findGame(selectedGame==1?"kotor2":"kotor"));
+}
+
 class Canvas final : public wxScrolledWindow {
 public:
     Canvas(wxWindow* parent,GuiRenderer& renderer,const std::function<const neotlk::TlkLookup&()>& tlk,
@@ -227,7 +246,7 @@ class Editor final : public GUIEditorPanel {
 public:
     Editor(wxWindow* parent,neomodules::Context context):GUIEditorPanel(parent,std::move(context)),renderer_([this](const auto& name)->const auto&{return texture(name);}) {
         darkMode_=settings_.darkMode();fontScale_=settings_.fontScale();
-        auto* box=new wxBoxSizer(wxVERTICAL);auto* toolbar=new wxWrapSizer(wxHORIZONTAL);
+        auto* box=new wxBoxSizer(wxVERTICAL);auto* toolbar=new wxWrapSizer(wxHORIZONTAL,wxREMOVE_LEADING_SPACES);
         tabs_=new wxAuiNotebook(this,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxAUI_NB_TOP|wxAUI_NB_TAB_MOVE|wxAUI_NB_CLOSE_ON_ACTIVE_TAB|wxAUI_NB_SCROLL_BUTTONS);
         box->Add(tabs_,0,wxEXPAND);document().tabPage=neotabs::addTabPage(tabs_,"GUI layout",false);
         const auto button=[&](int id,const char* title){auto* control=new wxButton(this,id,title);toolbar->Add(control,0,wxALL,4);};
@@ -246,8 +265,8 @@ public:
         zoom_=choice("Zoom:",{"Fit","50%","100%","200%"});grid_=choice("Snap:",{"1 px","4 px","8 px","16 px"});
         state_=choice("Preview state:",{"Normal","Highlight","Selected","Selected + highlight"});
         bounds_=new wxCheckBox(this,wxID_ANY,"Control bounds");bounds_->SetValue(true);previewBar->Add(bounds_,0,wxALIGN_CENTER_VERTICAL|wxALL,4);
-        preview_->SetToolTip("Render textures and fonts from the source selected in Assets. Preview settings do not edit the layout.");
-        game_->SetToolTip("Rendering rules only. Choose the texture/font source in Assets.");
+        preview_->SetToolTip("Render textures and fonts from the asset source shown below. Choose a different source in Assets.");
+        game_->SetToolTip("Rendering rules and the saved default asset directory for layouts opened outside a game folder.");
         layoutSource_->SetToolTip("KOTOR 1 archive and loose-file scaling. KOTOR 2 does not use this setting.");
         zoom_->SetToolTip("Fixed zoom supports horizontal and vertical scrolling.");
         grid_->SetToolTip("Move and resize in these pixel increments. Shift + arrow keys moves ten increments.");
@@ -431,13 +450,32 @@ private:
         d.source.identity="untitled:"+std::to_string(++nextUntitled_);d.source.fileName="Untitled"+std::to_string(nextUntitled_)+".gui";d.source.sourceDescription="New GUI layout";d.source.type=2047;
         addDocument(std::move(d),true);
     }
+    Resolver gameResourcesFor(const neogames::GameInstall& installation) {
+        const auto matches=[&](const Document& candidate) {
+            return candidate.installation&&
+                std::tie(candidate.installation->id,candidate.installation->installPath,candidate.installation->tlkPath,candidate.installation->overridePath)==
+                std::tie(installation.id,installation.installPath,installation.tlkPath,installation.overridePath);
+        };
+        if(matches(document()))return document().resolver;
+        for(const auto& candidate:documents_)if(matches(candidate))return candidate.resolver;
+        auto result=captureGameResources(installation);
+        if(context_.captureModFolder)result=neoshared::bif::ModFolder::layer(context_.captureModFolder(),std::move(result));
+        return result;
+    }
     void addDocument(Document d,bool modified=false) {
         d.history.push_back({d.model->gff().SaveBytes(),-1,{}});if(!modified)d.saved=d.history.front().bytes;
         d.resolver=document().resolver;d.installation=document().installation;d.hostAssets=document().hostAssets;d.assets=document().assets;d.game=game_->GetSelection();d.layout=1;
-        if(context_.captureResourceResolver) {d.resolver=context_.captureResourceResolver();d.installation.reset();d.hostAssets=true;d.assets="NeoToolKit game browser";}
+        const auto installation=context_.embedded&&d.path.empty()?std::optional<neogames::GameInstall>{}:guiInstallation(d.path,d.game);
+        if(installation) {
+            d.resolver=gameResourcesFor(*installation);d.installation=installation;d.hostAssets=false;
+            d.game=installation->id=="kotor2"?1:0;
+            d.assets=std::string(d.game==1?"KOTOR 2: ":"KOTOR 1: ")+neoshared::pathToUtf8(installation->installPath);
+        }
+        else if(context_.captureResourceResolver) {d.resolver=context_.captureResourceResolver();d.installation.reset();d.hostAssets=true;d.assets="NeoToolKit game browser";}
         else if(context_.resolveResource) {d.resolver=[resolve=context_.resolveResource](const std::string& name,std::uint16_t type,const neoshared::bif::JobControl&){return resolve(name,type);};d.installation.reset();d.assets="Game browser";}
         if(d.installation)d.model->loadTlk(d.installation->tlkPath);
         else if(document().model&&document().model->tlk().loaded())d.model->loadTlk(document().model->tlk().filename());
+        d.preview=bool(d.resolver);
         d.layout=!d.path.empty()||d.source.priority<=neoshared::ResourcePriority::Directory?1:0;
         rememberView();
         if(document().model) {d.tabPage=neotabs::addTabPage(tabs_,d.source.fileName,modified,false);documents_.push_back(std::move(d));active_=documents_.size()-1;}
