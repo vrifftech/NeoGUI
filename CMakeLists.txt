@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 cmake_policy(SET CMP0091 NEW)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "Shared host/module runtime")
-project(NeoGUI VERSION 0.1.0 LANGUAGES CXX)
+project(NeoGUI VERSION 0.1.1 LANGUAGES CXX)
 include(GNUInstallDirs)
 set(NEOSHARED_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../neoshared" CACHE PATH "NeoShared source directory")
 set(NEOSHARED_ENABLE_ERF ON CACHE BOOL "Game archive resources required by NeoGUI" FORCE)
