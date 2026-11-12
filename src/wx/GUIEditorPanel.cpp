@@ -1,3 +1,4 @@
+#include "core/Version.hpp"
 #include "wx/GUIEditorPanel.hpp"
 #include "GuiRenderer.hpp"
 #include "GameResources.hpp"
@@ -758,7 +759,7 @@ private:
             case ID_FontReset:fontScaleWheelFilter_.reset();fontScale_=neoview::kDefaultFontScale;settings_.setFontScale(fontScale_);neoview::applyFontScale(this,fontScale_);break;
             case ID_ClearRecent:settings_.clearRecentFiles();refreshRecentFiles();break;
             case ID_Exit:requestModuleClose();break;
-            case ID_About:wxMessageBox("NeoGUI\nEdit GUI layouts and preview game textures, fonts and control states.","About NeoGUI",wxOK|wxICON_INFORMATION,this);break;
+            case ID_About:wxMessageBox("NeoGUI " NEOGUI_VERSION_STRING "\nEdit GUI layouts and preview game textures, fonts and control states.","About NeoGUI",wxOK|wxICON_INFORMATION,this);break;
         }}catch(const std::exception& error){wxui::showError(this,error);}
     }
     Document& document() {return documents_.at(active_);}
