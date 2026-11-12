@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -123,8 +123,7 @@ jobs:
       - name: Package Windows
         if: runner.os == 'Windows'
         run: |
-          Compress-Archive -Path stage/* `
-            -DestinationPath "$env:RUNNER_TEMP/NeoGUI-windows-x86_64.zip"
+          Copy-Item stage/bin/NeoGUI.exe "$env:RUNNER_TEMP/NeoGUI-windows-x86_64.exe"
 
       - name: Upload package
         uses: actions/upload-artifact@v7
@@ -134,3 +133,15 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+  release:
+    name: Publish release
+    needs: [build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      actions: read
+      contents: write
+    uses: vrifftech/neoshared/.github/workflows/publish-release.yml@main
+    with:
+      version-file: CMakeLists.txt
+      artifact-pattern: NeoGUI-*
