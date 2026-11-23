@@ -44,6 +44,7 @@ if(NEOGUI_BUILD_WX_GUI OR NEOGUI_BUILD_WX_MODULE)
         else()
             add_executable(NeoGUI src/wx/main.cpp)
         endif()
+        neo_enable_updates(NeoGUI "NeoGUI" "${PROJECT_VERSION}")
         target_link_libraries(NeoGUI PRIVATE neogui::wx)
         neo_add_windows_version_resource(NeoGUI
             VERSION "${PROJECT_VERSION}"
