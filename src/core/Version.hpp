@@ -1,3 +1,3 @@
 #pragma once
 
-#define NEOGUI_VERSION_STRING "0.1.4"
+#define NEOGUI_VERSION_STRING "0.1.5"
