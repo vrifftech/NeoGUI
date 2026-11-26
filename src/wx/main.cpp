@@ -23,7 +23,7 @@ private:neosettings::AppSettings settings_{"NeoGUI"};
 };
 class App final : public wxApp {
 public:bool OnInit() override {SetAppName("NeoGUI");SetVendorName("NeoTools");wxui::initializeTheme("NeoGUI");wxInitAllImageHandlers();auto* frame=new Frame;frame->Show();
-#if !defined(__EMSCRIPTEN__)
+#if defined(NEO_UPDATE_APPLICATION)
         neoupdate::install(*frame, NEO_UPDATE_APPLICATION, NEO_UPDATE_VERSION);
 #endif
 for(int i=1;i<argc;++i){const auto path=neosettings::pathFromWx(wxString(argv[i]));frame->CallAfter([frame,path]{frame->panel_->openFile(path);});}return true;}
