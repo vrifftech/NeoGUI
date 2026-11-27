@@ -74,7 +74,7 @@ public:
     Canvas(wxWindow* parent,GuiRenderer& renderer,const std::function<const neotlk::TlkLookup&()>& tlk,
            std::function<bool()> commit,std::function<void(int)> select,std::function<void(Rect)> edit)
         :wxScrolledWindow(parent),renderer_(renderer),tlk_(tlk),commit_(std::move(commit)),select_(std::move(select)),edit_(std::move(edit)) {
-        SetBackgroundStyle(wxBG_STYLE_PAINT);SetMinSize(FromDIP(wxSize(300,250)));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);SetMinSize(FromDIP(wxSize(200,200)));
         SetScrollRate(16,16);
         SetToolTip("Click to select; drag to move or resize. Arrow keys move by the grid step; Shift moves ten steps. Esc cancels a drag.");
         Bind(wxEVT_PAINT,&Canvas::paint,this);
@@ -231,6 +231,7 @@ struct Document {
     std::filesystem::path path;
     std::string assets,fieldPath,findText,findPath;
     Resolver resolver;
+    neoshared::ResourceResolverFactory sourceResources;
     bool hostAssets{};
     std::optional<neogames::GameInstall> installation;
     std::set<std::filesystem::path> assetInputs;
@@ -279,10 +280,10 @@ public:
         for(const auto& [id,label]:std::initializer_list<std::pair<int,const char*>>{{ID_ImportControl,"Add Control..."},{ID_Duplicate,"Duplicate"},{ID_Delete,"Delete"}})controlActions->Add(new wxButton(controlPane,id,label),0,wxALL,4);
         controlBox->Add(controlActions,0,wxEXPAND);tree_=new wxTreeCtrl(controlPane,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxTR_HAS_BUTTONS|wxTR_SINGLE);controlBox->Add(tree_,1,wxEXPAND);controlPane->SetSizer(controlBox);
         auto* right=new wxSplitterWindow(split,wxID_ANY);canvas_=new Canvas(right,renderer_,[this]()->const auto&{return document().model->tlk();},[this]{return commitGeometry();},[this](int index){tree_->SelectItem(items_.at(std::size_t(index+1)));},[this](Rect r){editExtent(r);});
-        auto* inspector=new wxScrolledWindow(right);inspector->SetScrollRate(8,8);auto* props=new wxBoxSizer(wxVERTICAL);auto* dimensions=new wxFlexGridSizer(0,4,4,4);
+        auto* inspector=new wxScrolledWindow(right);inspector->SetMinSize(FromDIP(wxSize(220,200)));inspector->SetScrollRate(8,8);auto* props=new wxBoxSizer(wxVERTICAL);auto* dimensions=new wxFlexGridSizer(0,2,4,4);
         selectionInfo_=new wxStaticText(inspector,wxID_ANY,{},wxDefaultPosition,wxDefaultSize,wxST_ELLIPSIZE_MIDDLE);selectionInfo_->SetMinSize(wxSize(0,-1));props->Add(selectionInfo_,0,wxEXPAND|wxALL,6);
         for(std::size_t i=0;i<geometry_.size();++i) {dimensions->Add(new wxStaticText(inspector,wxID_ANY,std::array<const char*,4>{"Left","Top","Width","Height"}[i]),0,wxALIGN_CENTER_VERTICAL);geometry_[i]=new wxTextCtrl(inspector,wxID_ANY,{},wxDefaultPosition,FromDIP(wxSize(90,-1)),wxTE_PROCESS_ENTER);dimensions->Add(geometry_[i],1,wxEXPAND);geometry_[i]->Bind(wxEVT_TEXT_ENTER,[this](wxCommandEvent&){applyExtent();});geometry_[i]->Bind(wxEVT_TEXT,[this](wxCommandEvent&){geometryDirty_=true;refresh();});}
-        dimensions->AddGrowableCol(1);dimensions->AddGrowableCol(3);props->Add(dimensions,0,wxEXPAND|wxALL,6);
+        dimensions->AddGrowableCol(1);props->Add(dimensions,0,wxEXPAND|wxALL,6);
         auto* geometryActions=new wxWrapSizer(wxHORIZONTAL);
         apply_=new wxButton(inspector,wxID_ANY,"Apply geometry");geometryActions->Add(apply_,0,wxRIGHT|wxBOTTOM,6);apply_->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){applyExtent();});
         revert_=new wxButton(inspector,ID_RevertGeometry,"Revert geometry");geometryActions->Add(revert_,0,wxBOTTOM,6);props->Add(geometryActions,0,wxEXPAND|wxLEFT|wxRIGHT,6);
@@ -291,8 +292,8 @@ public:
         auto* fieldActions=new wxWrapSizer(wxHORIZONTAL);auto* editValue=new wxButton(inspector,ID_EditValue,"Edit value...");auto* copyValue=new wxButton(inspector,ID_CopyValue,"Copy value");fieldActions->Add(editValue,0,wxRIGHT,6);fieldActions->Add(copyValue);props->Add(fieldActions,0,wxLEFT|wxRIGHT|wxBOTTOM,6);
         properties_=new wxListCtrl(inspector,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxLC_REPORT|wxLC_SINGLE_SEL);
         properties_->InsertColumn(0,"Field",wxLIST_FORMAT_LEFT,FromDIP(170));properties_->InsertColumn(1,"Type",wxLIST_FORMAT_LEFT,FromDIP(90));properties_->InsertColumn(2,"Value",wxLIST_FORMAT_LEFT,FromDIP(220));properties_->InsertColumn(3,"Resolved text",wxLIST_FORMAT_LEFT,FromDIP(260));props->Add(properties_,1,wxEXPAND|wxALL,6);
-        auto* note=new wxStaticText(inspector,wxID_ANY,"Enter/Apply commits geometry; Revert discards pending entries. Preview settings affect rendering only.");note->Wrap(FromDIP(320));props->Add(note,0,wxEXPAND|wxALL,6);inspector->SetSizer(props);
-        right->SetMinimumPaneSize(FromDIP(300));right->SetSashGravity(0.7);right->SplitVertically(canvas_,inspector,-FromDIP(360));
+        auto* note=new wxStaticText(inspector,wxID_ANY,"Enter/Apply commits geometry; Revert discards pending entries. Preview settings affect rendering only.");note->Wrap(FromDIP(320));props->Add(note,0,wxEXPAND|wxALL,6);inspector->SetSizer(props);inspector->FitInside();
+        right->SetMinimumPaneSize(FromDIP(200));right->SetSashGravity(0.7);right->SplitVertically(canvas_,inspector,-FromDIP(360));
         split->SetMinimumPaneSize(FromDIP(150));split->SplitVertically(controlPane,right,FromDIP(210));box->Add(split,1,wxEXPAND);SetSizer(box);createModuleStatusBar(1);
         auto* bar=new wxMenuBar;auto* file=new wxMenu;
         file->Append(ID_New,"&New GUI\tCtrl+N");
@@ -373,10 +374,10 @@ public:
             settings_.addRecentFile(absolute);refreshRecentFiles();return true;}
         catch(const std::exception& error){wxui::showError(this,error);return false;}
     }
-    bool openResource(neoshared::ResourceDocument source) override {
+    bool openResource(neoshared::ResourceDocument source,neoshared::ResourceResolverFactory resources={}) override {
         try {if(!commitGeometry())return false;
             for(std::size_t i=0;i<documents_.size();++i)if(documents_[i].model&&documents_[i].source.identity==source.identity) {rememberView();showDocument(i);return true;}
-            return load(std::move(source),{});}catch(const std::exception& error){wxui::showError(this,error);return false;}
+            return load(std::move(source),{},std::move(resources));}catch(const std::exception& error){wxui::showError(this,error);return false;}
     }
     bool canClose() override {
         if(!commitGeometry())return false;
@@ -388,13 +389,14 @@ public:
         try {
             Resolver host;std::map<std::tuple<std::filesystem::path,std::filesystem::path,std::filesystem::path>,Resolver> games;
             for(auto& d:documents_) {
-                if(d.hostAssets) {if(!host)host=context_.captureResourceResolver();d.resolver=host;}
+                if(d.sourceResources)d.resolver=d.sourceResources();
+                else if(d.hostAssets) {if(!host)host=context_.captureResourceResolver();d.resolver=host;}
                 else if(d.installation) {
                     auto [session,inserted]=games.try_emplace(std::make_tuple(d.installation->installPath,d.installation->overridePath,d.installation->tlkPath));
                     if(inserted) {session->second=captureGameResources(*d.installation);if(context_.captureModFolder)session->second=neoshared::bif::ModFolder::layer(context_.captureModFolder(),std::move(session->second));}
                     d.resolver=session->second;
                 }
-                if(d.hostAssets||d.installation) {d.assetInputs.clear();d.textures.clear();}
+                if(d.sourceResources||d.hostAssets||d.installation) {d.assetInputs.clear();d.textures.clear();}
             }
             renderer_.clear();updatePreview();refresh();
         }catch(const std::exception& error){wxui::showError(this,error);}
@@ -467,7 +469,8 @@ private:
         d.history.push_back({d.model->gff().SaveBytes(),-1,{}});if(!modified)d.saved=d.history.front().bytes;
         d.resolver=document().resolver;d.installation=document().installation;d.hostAssets=document().hostAssets;d.assets=document().assets;d.game=game_->GetSelection();d.layout=1;
         const auto installation=context_.embedded&&d.path.empty()?std::optional<neogames::GameInstall>{}:guiInstallation(d.path,d.game);
-        if(installation) {
+        if(d.sourceResources) {d.resolver=d.sourceResources();d.installation.reset();d.hostAssets=false;d.assets=d.source.sourceDescription;}
+        else if(installation) {
             d.resolver=gameResourcesFor(*installation);d.installation=installation;d.hostAssets=false;
             d.game=installation->id=="kotor2"?1:0;
             d.assets=std::string(d.game==1?"KOTOR 2: ":"KOTOR 1: ")+neoshared::pathToUtf8(installation->installPath);
@@ -496,9 +499,9 @@ private:
         if(dialog.ShowModal()==wxID_OK) {wxArrayString paths;dialog.GetPaths(paths);for(const auto& path:paths)openFile(neosettings::pathFromWx(path));}
     }
     bool dirty() const {return document().model&&(geometryDirty_||document().history.at(document().historyIndex).bytes!=document().saved);}
-    bool load(neoshared::ResourceDocument source,const std::filesystem::path& path) {
+    bool load(neoshared::ResourceDocument source,const std::filesystem::path& path,neoshared::ResourceResolverFactory resources={}) {
         Document candidate;candidate.model=std::make_unique<GffModel>();neoshared::loadGffResource(source,*candidate.model,"GUI");
-        candidate.source=std::move(source);candidate.path=path;
+        candidate.source=std::move(source);candidate.path=path;candidate.sourceResources=std::move(resources);
         addDocument(std::move(candidate));return true;
     }
     void refreshCommands() {
@@ -592,7 +595,7 @@ private:
             if(detached) {wxFileDialog dialog(this,"Save GUI layout",neosettings::pathToWx(output.parent_path()),wxui::toWx(output.empty()?document().source.fileName:neoshared::pathToUtf8(output.filename())),"GUI layouts (*.gui)|*.gui;*.GUI",wxFD_SAVE|wxFD_OVERWRITE_PROMPT);if(dialog.ShowModal()!=wxID_OK)return false;output=neosettings::pathFromWx(dialog.GetPath());}
             neoshared::checkGffOutputType(output,".gui");auto inputs=document().source.protectedInputs;inputs.insert(inputs.end(),document().assetInputs.begin(),document().assetInputs.end());if(document().model->tlk().loaded())inputs.push_back(document().model->tlk().filename());
             for(const auto& other:documents_)if(&other!=&document()) {if(!other.path.empty())inputs.push_back(other.path);inputs.insert(inputs.end(),other.source.protectedInputs.begin(),other.source.protectedInputs.end());inputs.insert(inputs.end(),other.assetInputs.begin(),other.assetInputs.end());if(other.model&&other.model->tlk().loaded())inputs.push_back(other.model->tlk().filename());}
-            neoshared::checkResourceOutput(output,inputs);validateHostOutput(output);document().model->gff().SaveFile(output);document().path=neosettings::storedPath(output);
+            neoshared::checkResourceOutput(output,inputs);validateHostOutput(output);document().model->gff().SaveFile(output);document().path=neosettings::storedPath(output);document().source.identity.clear();
             if(detached)layoutSource_->SetSelection(1);
             document().saved=document().history.at(document().historyIndex).bytes;settings_.addRecentFile(document().path);refreshRecentFiles();tree_->SetItemText(items_.front(),neosettings::pathToWx(document().path.filename()));refresh();return true;
         } catch(const std::exception& error){wxui::showError(this,error);return false;}
@@ -711,7 +714,7 @@ private:
         auto resolve=captureGameResources(installation);
         if(context_.captureModFolder)resolve=neoshared::bif::ModFolder::layer(context_.captureModFolder(),std::move(resolve));
         if(document().model)document().model->loadTlk(installation.tlkPath);
-        document().resolver=std::move(resolve);document().installation=installation;document().hostAssets=false;
+        document().resolver=std::move(resolve);document().installation=installation;document().sourceResources={};document().hostAssets=false;
         document().assets=std::string(installation.id=="kotor2"?"KOTOR 2: ":"KOTOR 1: ")+neoshared::pathToUtf8(installation.installPath);
         game_->SetSelection(installation.id=="kotor2"?1:0);renderer_.setK2(game_->GetSelection()==1);
         resetAssets();
@@ -725,7 +728,7 @@ private:
             for(const auto& [type,suffix]:textureTypes)if(extension==suffix)(*files)[{neoshared::material::textureResourceKey(neoshared::pathToUtf8(entry.path().stem())),type}]=entry.path();
             if(extension==".txi")(*files)[{neoshared::material::textureResourceKey(neoshared::pathToUtf8(entry.path().stem())),2022}]=entry.path();
         }
-        document().installation.reset();document().hostAssets=false;document().assets="Extracted folder: "+neoshared::pathToUtf8(directory);document().resolver=[files](const std::string& name,std::uint16_t type,const neoshared::bif::JobControl&)->std::optional<neoshared::ResourceDocument> {
+        document().installation.reset();document().sourceResources={};document().hostAssets=false;document().assets="Extracted folder: "+neoshared::pathToUtf8(directory);document().resolver=[files](const std::string& name,std::uint16_t type,const neoshared::bif::JobControl&)->std::optional<neoshared::ResourceDocument> {
             const auto file=files->find({name,type});if(file==files->end())return {};
             const auto& path=file->second;return neoshared::ResourceDocument{neoshared::pathToUtf8(path),neoshared::pathToUtf8(path.filename()),neoshared::pathToUtf8(path),type,neoshared::texture::readFileBytes(path),{path}};
         };resetAssets();
@@ -751,7 +754,7 @@ private:
             case ID_GeneratePatcher:generatePatcher();break;
             case ID_Undo:if(geometryDirty_) {showProperties();refresh();}else undo(document().historyIndex-1);break;case ID_Redo:undo(document().historyIndex+1);break;
             case ID_Assets:assetFolder();break;
-            case ID_HostAssets: if(commitGeometry()) {auto resolve=context_.captureResourceResolver();document().installation.reset();document().hostAssets=true;document().assets="NeoToolKit game browser";document().resolver=std::move(resolve);resetAssets();}break;
+            case ID_HostAssets: if(commitGeometry()) {auto resolve=context_.captureResourceResolver();document().installation.reset();document().sourceResources={};document().hostAssets=true;document().assets="NeoToolKit game browser";document().resolver=std::move(resolve);resetAssets();}break;
             case ID_Tlk: {wxFileDialog dialog(this,"Load GUI talk table",{},{},"Talk tables (*.tlk)|*.tlk;*.TLK",wxFD_OPEN|wxFD_FILE_MUST_EXIST);if(dialog.ShowModal()==wxID_OK&&commitGeometry()) {document().model->loadTlk(neosettings::pathFromWx(dialog.GetPath()));showProperties();refresh();updatePreview();}break;}
             case ID_DarkMode:darkMode_=darkModeItem_->IsChecked();settings_.setDarkMode(darkMode_);applyAppearance();break;
             case ID_FontIncrease:fontScaleWheelFilter_.reset();changeFontScale(1);break;

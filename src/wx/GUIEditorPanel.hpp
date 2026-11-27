@@ -5,7 +5,7 @@ class GUIEditorPanel : public neomodules::Panel {
 public:
     using Panel::Panel;
     virtual bool openFile(const std::filesystem::path&)=0;
-    virtual bool openResource(neoshared::ResourceDocument)=0;
+    virtual bool openResource(neoshared::ResourceDocument,neoshared::ResourceResolverFactory resources={})=0;
 };
 GUIEditorPanel* createEditorPanel(wxWindow* parent,neomodules::Context context={});
 }
