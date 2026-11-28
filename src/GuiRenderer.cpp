@@ -27,7 +27,10 @@ Rect GuiRenderer::layoutExtent(Rect rect) const {
 }
 GuiRenderer::Font& GuiRenderer::font(const std::string& name) {
     auto found=fonts_.find(name);if(found!=fonts_.end())return found->second;
-    const auto& source=texture(name);Font value;std::vector<wxPoint2DDouble>* list=nullptr;std::size_t remaining=0;
+    // The PC GUI selects the 'a' font atlas below 1280 pixels, including our
+    // 1024-pixel preview desktop. Its metrics already include the font size.
+    Font value;value.texture=name=="fnt_console"?name:(name+"a").substr(0,16);
+    const auto& source=texture(value.texture);std::vector<wxPoint2DDouble>* list=nullptr;std::size_t remaining=0;
     for(const auto& line:neoshared::texture::parseTxiEntries(source.txi)) {
         if(line.listData&&remaining) {std::istringstream row(line.value);double x,y,z;row>>x>>y>>z;list->push_back({x,y});--remaining;continue;}
         if(line.key=="fontheight")value.height=std::stod(line.value)*100;
@@ -77,15 +80,16 @@ Rect GuiRenderer::border(wxGraphicsContext& dc,const GffStruct& record,const std
     if(dimension==0&&!corner.empty()&&!edge.empty())dimension=texture(corner).layers.front().height;
     double x=0,y=0;if(!corner.empty()) {const auto& p=texture(corner).layers.front();x=dimension?dimension:p.width;y=dimension?dimension:p.height;x=std::min(x,rect.m_width/2);y=std::min(y,rect.m_height/2);}
     const Rect inner(rect.m_x+x,rect.m_y+y,rect.m_width-2*x,rect.m_height-2*y);
-    stamp(dc,corner,{rect.m_x,rect.m_y,x,y},tint);stamp(dc,corner,{rect.GetRight()-x,rect.m_y,x,y},tint,1,0,true);
-    stamp(dc,corner,{rect.m_x,rect.GetBottom()-y,x,y},tint,1,0,false,true);stamp(dc,corner,{rect.GetRight()-x,rect.GetBottom()-y,x,y},tint,1,2);
+    stamp(dc,corner,{rect.m_x,rect.m_y,x,y},tint);stamp(dc,corner,{rect.GetRight()-x,rect.m_y,x,y},tint,1,1);
+    stamp(dc,corner,{rect.m_x,rect.GetBottom()-y,x,y},tint,1,3);stamp(dc,corner,{rect.GetRight()-x,rect.GetBottom()-y,x,y},tint,1,2);
     if(!edge.empty()) {
         const auto tile=dimension?dimension:double(texture(edge).layers.front().width);
         int columns=int(inner.m_width/tile),rows=int(inner.m_height/tile);
         if(columns==0&&inner.m_width>=tile/2)columns=1;
         if(rows==0&&inner.m_height>=tile/2)rows=1;
-        for(int i=0;i<columns;++i) {const auto w=inner.m_width/columns;stamp(dc,edge,{inner.m_x+i*w,rect.m_y,w,y},tint);stamp(dc,edge,{inner.m_x+i*w,rect.GetBottom()-y,w,y},tint,1,2);}
-        for(int i=0;i<rows;++i) {const auto h=inner.m_height/rows;stamp(dc,edge,{rect.m_x,inner.m_y+i*h,x,h},tint,1,1);stamp(dc,edge,{rect.GetRight()-x,inner.m_y+i*h,x,h},tint,1,3);}
+        double left=inner.m_x,top=inner.m_y;
+        for(int i=0;i<columns;++i) {const auto w=int(inner.m_width)/columns+(i<int(inner.m_width)%columns);stamp(dc,edge,{left,rect.m_y,double(w),y},tint);stamp(dc,edge,{left,rect.GetBottom()-y,double(w),y},tint,1,2);left+=w;}
+        for(int i=0;i<rows;++i) {const auto h=int(inner.m_height)/rows+(i<int(inner.m_height)%rows);stamp(dc,edge,{rect.m_x,top,x,double(h)},tint,1,3);stamp(dc,edge,{rect.GetRight()-x,top,x,double(h)},tint,1,1);top+=h;}
     }
     if(!fill.empty()) {
         const auto styleId=integer(*style,"FILLSTYLE");
@@ -173,7 +177,7 @@ void GuiRenderer::scrollbar(wxGraphicsContext& dc,const GffStruct& style,Rect re
 double GuiRenderer::text(wxGraphicsContext& dc,const GffStruct& style,const std::string& value,Rect rect,double scale,std::optional<Color> overrideTint,double scroll) {
     if(value.empty())return 0;
     if(!k2_&&rect.m_width<30)scale=1;
-    auto name=string(style,"FONT");if(name.empty())name="dialogfont16x16";auto& f=font(name);const auto& pixels=texture(name).layers.front();
+    auto name=string(style,"FONT");if(name.empty())name="dialogfont16x16";auto& f=font(name);const auto& pixels=texture(f.texture).layers.front();
     const auto bytes=neotlk::encodeTextBytes(value,neotlk::detectClassicPreferredEncoding(language_,false,{}));
     const auto glyphWidth=[&](unsigned char c){const auto i=std::min<std::size_t>(c,f.upper.size()-1);return (f.lower.at(i).m_x-f.upper.at(i).m_x)*f.width*scale;};
     const auto advance=[&](unsigned char c){return glyphWidth(c)+f.spacing*scale;};

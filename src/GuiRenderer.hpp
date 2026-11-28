@@ -18,8 +18,8 @@ public:
     void setLayout(std::string name,bool directory);
     double layoutScale() const {return k2_?1:layoutScale_;}
     Rect layoutExtent(Rect) const;
-    double fontScale() const {return k2_?1:1.3;}
-    double itemScale() const {return k2_?1:1.6;}
+    double fontScale() const {return 1;}
+    double itemScale() const {return 1;}
     int padding(const GffStruct& record) const {return int(integer(record,"PADDING")*layoutScale()+.5);}
     void clear() {fonts_.clear();bitmaps_.clear();}
     void cacheControl(const GffStruct& control);
@@ -31,7 +31,7 @@ public:
     void scrollbar(wxGraphicsContext&,const GffStruct&,Rect,int maximum,int current,int visible);
     double text(wxGraphicsContext&,const GffStruct&,const std::string&,Rect,double scale,std::optional<Color> tint={},double scroll=0);
 private:
-    struct Font {double height{},width{},spacing{},lineSpacing{};std::vector<wxPoint2DDouble> upper,lower;};
+    struct Font {std::string texture;double height{},width{},spacing{},lineSpacing{};std::vector<wxPoint2DDouble> upper,lower;};
     Font& font(const std::string&);
     void image(wxGraphicsContext&,const GffStruct&,Rect,int flip);
     const neoshared::texture::TextureData& texture(const std::string& name) {return texture_(name);}
